@@ -397,11 +397,16 @@ src/
     key.ts                    # Deterministic cache key from path + resolved params
     version.ts                # KV-backed version get/put for cache busting
     coalesce.ts               # Single-flight request dedup (BoundedLRUMap)
+  analytics/
+    middleware.ts             # Log every request outcome to D1 (waitUntil)
+    queries.ts                # Aggregation SQL for admin API
+    schema.sql                # D1 table DDL (also used by weekly cron)
   debug/
     inject.ts                 # Fetch debug.html from ASSETS, inject diagnostics
     diagnostics.ts            # Collect request diagnostics for debug UI
   admin/
     config.ts                 # GET/POST /admin/config handlers
+    analytics.ts              # GET /admin/analytics, GET /admin/analytics/errors
 debug-ui/                     # Astro + React debug dashboard (separate build)
 ```
 
@@ -611,6 +616,166 @@ consciously eliminated (with rationale).
 - [ ] Config passed via Hono context (no singletons)
 - [ ] Origins + derivatives + responsive + passthrough + cache + container
 
+### Analytics dashboard (D1)
+
+- [ ] D1 database binding (`ANALYTICS`)
+- [ ] Schema: `transform_log` table (ts, path, origin, status, mode, derivative, duration_ms, cache_hit, source_type, error_code)
+- [ ] Middleware: log every request outcome to D1 (non-blocking via `waitUntil`)
+- [ ] Weekly cron: `DROP TABLE` + recreate to keep D1 lean (7-day rolling window)
+- [ ] `GET /admin/analytics` — JSON summary: success/failure counts, by status code, by origin, by derivative, p50/p95 latency
+- [ ] `GET /admin/analytics/errors` — recent errors with path, status, error code
+- [ ] Dashboard page in debug UI (served from ASSETS)
+
+---
+
+## Analytics dashboard — D1 design
+
+### Purpose
+
+Track transform success/failure rates, latency, cache hit ratios, and error
+patterns. D1 is the right fit: SQL queries for aggregation, no external deps,
+free tier generous (5M reads/day, 100K writes/day).
+
+### D1 schema
+
+```sql
+CREATE TABLE IF NOT EXISTS transform_log (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts       INTEGER NOT NULL,              -- Unix ms
+  path     TEXT NOT NULL,                  -- request path
+  origin   TEXT,                           -- matched origin name
+  status   INTEGER NOT NULL,              -- HTTP response status
+  mode     TEXT,                           -- video/frame/spritesheet/audio
+  derivative TEXT,                         -- resolved derivative name
+  duration_ms INTEGER,                     -- total request processing time
+  cache_hit INTEGER NOT NULL DEFAULT 0,    -- 1=Cache API hit, 0=miss
+  transform_source TEXT,                   -- 'binding', 'container', 'passthrough'
+  source_type TEXT,                        -- 'r2', 'remote', 'fallback'
+  error_code TEXT,                         -- AppError code or MediaError code
+  bytes    INTEGER                         -- response content-length
+);
+
+CREATE INDEX IF NOT EXISTS idx_log_ts ON transform_log(ts);
+CREATE INDEX IF NOT EXISTS idx_log_status ON transform_log(status);
+```
+
+### Write path
+
+Middleware wraps every request. On response (both success and error), inserts
+one row into `transform_log` via `ctx.waitUntil()`. The insert is fire-and-forget
+— never blocks the response.
+
+```typescript
+// In analytics middleware (simplified)
+ctx.waitUntil(
+	env.ANALYTICS.prepare(
+		'INSERT INTO transform_log (ts, path, origin, status, mode, derivative, duration_ms, cache_hit, transform_source, source_type, error_code, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+	)
+		.bind(Date.now(), path, origin, status, mode, derivative, durationMs, cacheHit, transformSource, sourceType, errorCode, bytes)
+		.run(),
+);
+```
+
+### Read path (admin API)
+
+`GET /admin/analytics` returns aggregated stats. Bearer auth required (same as config API).
+
+```typescript
+// Summary query
+SELECT
+  COUNT(*) as total,
+  SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) as success,
+  SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) as errors,
+  SUM(cache_hit) as cache_hits,
+  AVG(duration_ms) as avg_latency_ms,
+  -- Group by status code
+  status, COUNT(*) as count
+FROM transform_log
+WHERE ts > ?  -- last 24h / 7d
+GROUP BY status
+ORDER BY count DESC;
+```
+
+Additional breakdowns:
+
+- By origin: `GROUP BY origin`
+- By derivative: `GROUP BY derivative`
+- By transform source: `GROUP BY transform_source`
+- By error code (errors only): `WHERE status >= 400 GROUP BY error_code`
+- Latency percentiles: `ORDER BY duration_ms` with manual p50/p95 calc
+
+### Weekly cron cleanup
+
+Cron trigger runs once per week. Drops and recreates the table to prevent
+unbounded D1 growth. 7-day rolling window is sufficient for operational
+visibility; longer-term analytics belong in Workers Analytics Engine or
+external systems.
+
+```typescript
+// In scheduled() handler
+async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+  if (controller.cron === '0 0 * * 0') {  // Sunday midnight UTC
+    await env.ANALYTICS.exec(`
+      DROP TABLE IF EXISTS transform_log;
+      CREATE TABLE IF NOT EXISTS transform_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        origin TEXT,
+        status INTEGER NOT NULL,
+        mode TEXT,
+        derivative TEXT,
+        duration_ms INTEGER,
+        cache_hit INTEGER NOT NULL DEFAULT 0,
+        transform_source TEXT,
+        source_type TEXT,
+        error_code TEXT,
+        bytes INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_log_ts ON transform_log(ts);
+      CREATE INDEX IF NOT EXISTS idx_log_status ON transform_log(status);
+    `);
+    console.log(JSON.stringify({ level: 'info', msg: 'Weekly analytics cleanup completed', ts: Date.now() }));
+  }
+}
+```
+
+### Wrangler config additions
+
+```jsonc
+{
+	"d1_databases": [{ "binding": "ANALYTICS", "database_name": "video-resizer-analytics", "database_id": "..." }],
+	"triggers": {
+		"crons": ["0 0 * * 0"], // Every Sunday at midnight UTC
+	},
+}
+```
+
+### Hono export pattern (fetch + scheduled)
+
+Since Hono owns `fetch`, export both handlers:
+
+```typescript
+export default {
+	fetch: app.fetch,
+	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+		// Weekly D1 cleanup
+	},
+};
+```
+
+### Directory structure addition
+
+```
+src/
+  analytics/
+    middleware.ts   # Log every request outcome to D1
+    queries.ts      # Aggregation queries for admin API
+    schema.sql      # D1 table creation SQL (also used by cron)
+  admin/
+    analytics.ts    # GET /admin/analytics, GET /admin/analytics/errors
+```
+
 ---
 
 ## Zod 4
@@ -691,8 +856,10 @@ Production: `hono`, `zod` (v4), `aws4fetch`. Three deps.
 		{ "binding": "CONFIG", "id": "..." },
 		{ "binding": "CACHE_VERSIONS", "id": "..." },
 	],
+	"d1_databases": [{ "binding": "ANALYTICS", "database_name": "video-resizer-analytics", "database_id": "..." }],
 	"assets": { "directory": "./debug-ui/dist", "binding": "ASSETS" },
 	"observability": { "enabled": true },
+	"triggers": { "crons": ["0 0 * * 0"] },
 }
 ```
 
@@ -727,6 +894,10 @@ Run `npx wrangler types` after any binding change.
 - [ ] `src/cache/version.ts` — KV version get/put
 - [ ] `src/middleware/*.ts` — All middleware
 - [ ] `src/admin/config.ts` — Config admin endpoints
-- [ ] `src/debug/*.ts` — Debug UI injection
-- [ ] `src/index.ts` — Full Hono app wiring
-- [ ] `wrangler.jsonc` — Full bindings for deployment
+- [ ] `src/analytics/middleware.ts` — D1 request logging (non-blocking)
+- [ ] `src/analytics/queries.ts` — Aggregation queries for admin API
+- [ ] `src/analytics/schema.sql` — D1 table creation SQL
+- [ ] `src/admin/analytics.ts` — GET /admin/analytics + /admin/analytics/errors
+- [ ] `src/debug/*.ts` — Debug UI injection + analytics dashboard page
+- [ ] `src/index.ts` — Full Hono app wiring (fetch + scheduled handlers)
+- [ ] `wrangler.jsonc` — Full bindings + D1 + cron trigger for deployment
