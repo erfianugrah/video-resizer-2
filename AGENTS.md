@@ -850,54 +850,154 @@ Production: `hono`, `zod` (v4), `aws4fetch`. Three deps.
 
 ```jsonc
 {
-	"media": { "binding": "MEDIA", "remote": true },
-	"r2_buckets": [{ "binding": "VIDEOS", "bucket_name": "..." }],
+	"media": { "binding": "MEDIA" },
+	"r2_buckets": [{ "binding": "VIDEOS", "bucket_name": "videos" }],
 	"kv_namespaces": [
-		{ "binding": "CONFIG", "id": "..." },
-		{ "binding": "CACHE_VERSIONS", "id": "..." },
+		{ "binding": "CONFIG", "id": "96e2e31372ac424699539b1bca50b18f" },
+		{ "binding": "CACHE_VERSIONS", "id": "548a5f4f87824d758542ace666293216" },
 	],
-	"d1_databases": [{ "binding": "ANALYTICS", "database_name": "video-resizer-analytics", "database_id": "..." }],
-	"assets": { "directory": "./debug-ui/dist", "binding": "ASSETS" },
+	// Not yet created:
+	// "d1_databases": [{ "binding": "ANALYTICS", "database_name": "video-resizer-analytics", "database_id": "..." }],
+	// "assets": { "directory": "./debug-ui/dist", "binding": "ASSETS" },
 	"observability": { "enabled": true },
-	"triggers": { "crons": ["0 0 * * 0"] },
+	"routes": [{ "pattern": "cdn.erfi.dev", "custom_domain": true }],
+	// "triggers": { "crons": ["0 0 * * 0"] }  // Add when D1 analytics is wired
 }
 ```
 
 Run `npx wrangler types` after any binding change.
 
+## Current state (2026-03-27)
+
+### What's deployed and working on cdn.erfi.dev
+
+The full transform pipeline is live. Requests go through:
+`via check → config (KV) → passthrough → Akamai translation → param parse →
+derivative resolve → responsive sizing → origin match → cache lookup →
+source fetch (R2/remote) → env.MEDIA transform → tee body → client + cache.put`
+
+**Live test results:**
+
+- `rocky.mp4?derivative=tablet` → 5.2MB (1280x720), ~9s from 40MB source
+- `rocky.mp4?derivative=mobile` → 2.5MB (854x640), ~8s
+- `rocky.mp4?derivative=desktop` → 1920x1080, ~10s
+- `rocky.mp4?derivative=thumbnail` → 472KB PNG frame, ~2.5s
+- `rocky.mp4?imwidth=1080` → Akamai translation working
+
+### BLOCKING BUG: Cache API not hitting
+
+`cache.put()` succeeds (confirmed in logs: "cache.put OK"). But subsequent
+`cache.match()` with the same URL returns undefined. Every request re-transforms.
+
+**What was tried:**
+
+1. `cache.match(c.req.raw)` / `cache.put(c.req.raw, response.clone())` — the CF
+   example pattern. Didn't work, possibly because Hono locks the request body stream.
+2. `new Request(url, request)` for match, `new Request(url, {method:'GET'})` for put —
+   different Request objects, same URL. Didn't work.
+3. Clean Request from URL string with only Range/If-None-Match headers for match,
+   clean GET for put. Still no hit.
+4. `.tee()` body for cache.put vs `.clone()` — both tried. `.clone()` would blow
+   memory for large outputs so `.tee()` is correct, but neither approach hits cache.
+
+**Next steps to debug:**
+
+- Write a minimal Worker (no Hono) that does ONLY `cache.put` then `cache.match`
+  to isolate whether it's a Hono issue or a Cache API misunderstanding.
+- Check if `cache.put` with a `tee()`'d ReadableStream actually works — the CF docs
+  note that "chunked response bodies block subsequent .put() calls until complete",
+  which may mean the tee'd stream needs to fully drain before the entry is available.
+- Check if the custom domain setup is correct for Cache API (docs say custom domains
+  work, \*.workers.dev doesn't).
+- Try using `fetch()` with `cf: { cacheEverything: true, cacheTtl: 86400 }` as an
+  alternative caching strategy — this uses the CDN cache (not Cache API) and supports
+  tiered caching.
+- Check if `Vary` header on the Media binding response is causing cache key mismatch.
+
+### KV namespaces (production)
+
+| Binding          | ID                                 | Purpose                                    |
+| ---------------- | ---------------------------------- | ------------------------------------------ |
+| `CONFIG`         | `96e2e31372ac424699539b1bca50b18f` | Worker config (origins, derivatives, etc.) |
+| `CACHE_VERSIONS` | `548a5f4f87824d758542ace666293216` | Cache version registry                     |
+
+Config is seeded at key `worker-config` from `config/worker-config.json`.
+
+### R2 bucket
+
+| Binding  | Bucket   | Contents                                                                         |
+| -------- | -------- | -------------------------------------------------------------------------------- |
+| `VIDEOS` | `videos` | `big_buck_bunny_1080p.mov` (725MB), `erfi-135kg.mp4` (232MB), `rocky.mp4` (40MB) |
+
+Use `rclone ls erfi:videos/` to list. `big_buck_bunny` exceeds the Media binding's
+100MB input limit — needs FFmpeg container route (not yet implemented).
+
+### Test commands
+
+```bash
+# Live transform
+curl -sI "https://cdn.erfi.dev/rocky.mp4?derivative=tablet"
+
+# Tail logs
+npx wrangler tail --format json
+
+# Run tests
+npx vitest run
+
+# Deploy
+npx wrangler deploy
+
+# Check R2 contents
+rclone ls erfi:videos/
+
+# Read KV config
+npx wrangler kv key get --namespace-id="96e2e31372ac424699539b1bca50b18f" "worker-config" --remote
+
+# Upload new config
+npx wrangler kv key put --namespace-id="96e2e31372ac424699539b1bca50b18f" "worker-config" --path=config/worker-config.json --remote
+```
+
+---
+
 ## Implementation progress
 
-### Completed
+### Completed (121 tests, all passing)
 
-- [x] Project setup: TypeScript, Hono, Zod 4, aws4fetch, vitest
 - [x] `src/errors.ts` — AppError class (6 tests)
-- [x] `src/config/schema.ts` — Full Zod 4 config schema: origins, derivatives, auth, TTL, responsive, passthrough (10 tests)
-- [x] `src/params/schema.ts` — Canonical param schema + Akamai translation (16 tests)
-- [x] `src/params/derivatives.ts` — Derivative resolution with canonical dimension invariant (6 tests)
+- [x] `src/config/schema.ts` — Full Zod 4 config schema (10 tests)
+- [x] `src/config/loader.ts` — KV config loader with in-memory cache + v1 compat
+- [x] `src/params/schema.ts` — Canonical params + full Akamai/IMQuery translation + `needsContainer()` (37 tests)
+- [x] `src/params/derivatives.ts` — Derivative resolution, canonical dims invariant (6 tests)
+- [x] `src/params/responsive.ts` — Client Hints / CF-Device-Type auto-sizing (11 tests)
 - [x] `src/cache/key.ts` — Deterministic cache key from resolved params (11 tests)
-- [x] `src/index.ts` — Minimal Hono app shell
+- [x] `src/cache/store.ts` — Cache API wrapper (cache.match / cache.put)
+- [x] `src/cache/coalesce.ts` — BoundedLRU request dedup (5 tests)
+- [x] `src/sources/auth.ts` — AWS S3 (aws4fetch), bearer, header auth (6 tests)
+- [x] `src/sources/router.ts` — Origin matching + capture groups + source path resolution (8 tests)
+- [x] `src/sources/fetch.ts` — R2 + remote source fetching with priority fallback
+- [x] `src/transform/binding.ts` — env.MEDIA pipeline (input → transform → output)
+- [x] `src/log.ts` — Structured logging (console.log JSON for Workers Logs)
+- [x] `src/types.ts` — Env bindings interface
+- [x] `src/index.ts` — Full Hono app with middleware pipeline + scheduled handler
+- [x] `test/integration/pipeline.spec.ts` — End-to-end pipeline tests (22 tests)
+- [x] `config/worker-config.json` — Production config with 5 origins, 4 derivatives
+- [x] `wrangler.jsonc` — Deployed to cdn.erfi.dev (custom domain)
 
-### Next
+### Blocking
 
-- [ ] `src/params/akamai.ts` — Full Akamai/IMQuery translation with derivative matching (breakpoints + Euclidean distance)
-- [ ] `src/params/responsive.ts` — Client Hints / CF-Device-Type auto-sizing
-- [ ] `src/sources/auth.ts` — aws-s3, bearer, header implementations
-- [ ] `src/sources/r2.ts` — R2 bucket get -> ReadableStream
-- [ ] `src/sources/remote.ts` — HTTP fetch with auth -> ReadableStream
-- [ ] `src/sources/presigned.ts` — Presigned URL generation + KV caching
-- [ ] `src/sources/router.ts` — Origin matching + priority fallback
-- [ ] `src/transform/router.ts` — Binding vs container routing decision
-- [ ] `src/transform/binding.ts` — env.MEDIA pipeline
-- [ ] `src/transform/container.ts` — FFmpeg container DO
-- [ ] `src/transform/strategies/*.ts` — Per-mode option assembly
-- [ ] `src/cache/coalesce.ts` — BoundedLRUMap request dedup
-- [ ] `src/cache/version.ts` — KV version get/put
-- [ ] `src/middleware/*.ts` — All middleware
-- [ ] `src/admin/config.ts` — Config admin endpoints
-- [ ] `src/analytics/middleware.ts` — D1 request logging (non-blocking)
-- [ ] `src/analytics/queries.ts` — Aggregation queries for admin API
-- [ ] `src/analytics/schema.sql` — D1 table creation SQL
-- [ ] `src/admin/analytics.ts` — GET /admin/analytics + /admin/analytics/errors
-- [ ] `src/debug/*.ts` — Debug UI injection + analytics dashboard page
-- [ ] `src/index.ts` — Full Hono app wiring (fetch + scheduled handlers)
-- [ ] `wrangler.jsonc` — Full bindings + D1 + cron trigger for deployment
+- [ ] **Fix Cache API hit/miss** — cache.put succeeds but cache.match returns undefined (see debugging notes above)
+
+### Next (after cache fix)
+
+- [ ] `src/transform/container.ts` — FFmpeg container DO for oversized/advanced params
+- [ ] `src/sources/presigned.ts` — AWS presigned URL generation + KV caching
+- [ ] `src/cache/version.ts` — KV-backed version get/put for cache busting
+- [ ] Request coalescing integration into index.ts (module exists, not wired in)
+- [ ] `src/admin/config.ts` — POST /admin/config endpoint
+- [ ] `src/analytics/middleware.ts` — D1 request logging (non-blocking via waitUntil)
+- [ ] `src/analytics/queries.ts` — Aggregation SQL for admin API
+- [ ] `src/admin/analytics.ts` — GET /admin/analytics endpoints
+- [ ] `src/debug/inject.ts` — Debug UI from ASSETS binding
+- [ ] Error recovery: duration retry, alternative source retry, container fallback
+- [ ] Content-type correction for audio mode (force audio/mp4)
+- [ ] Range request validation (once cache is working)
