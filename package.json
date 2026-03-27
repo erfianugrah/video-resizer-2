@@ -3,14 +3,23 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
+		"check": "tsc --noEmit",
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"test": "vitest"
+		"test": "vitest",
+		"test:run": "vitest run"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.12.4",
+		"@cloudflare/workers-types": "^4.20260317.1",
+		"typescript": "^6.0.2",
 		"vitest": "~3.2.0",
 		"wrangler": "^4.76.0"
+	},
+	"dependencies": {
+		"aws4fetch": "^1.0.20",
+		"hono": "^4.12.9",
+		"zod": "^4.3.6"
 	}
 }

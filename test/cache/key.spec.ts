@@ -1,0 +1,75 @@
+import { describe, it, expect } from 'vitest';
+import { buildCacheKey } from '../../src/cache/key';
+import type { TransformParams } from '../../src/params/schema';
+
+describe('cache/key', () => {
+	it('builds a key from path and dimensions', () => {
+		const params: TransformParams = { width: 640, height: 360 };
+		const key = buildCacheKey('/videos/test.mp4', params);
+		expect(key).toBe('video:videos/test.mp4:w=640:h=360');
+	});
+
+	it('strips leading slashes from path', () => {
+		const params: TransformParams = { width: 640 };
+		const key = buildCacheKey('///videos/test.mp4', params);
+		expect(key).toBe('video:videos/test.mp4:w=640');
+	});
+
+	it('includes mode when not video', () => {
+		const params: TransformParams = { mode: 'frame', width: 320, height: 180, time: '2s', format: 'jpg' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toBe('frame:test.mp4:w=320:h=180:t=2s:f=jpg');
+	});
+
+	it('includes video-specific params', () => {
+		const params: TransformParams = { width: 1280, height: 720, quality: 'medium', compression: 'auto' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toBe('video:test.mp4:w=1280:h=720:q=medium:c=auto');
+	});
+
+	it('includes spritesheet params', () => {
+		const params: TransformParams = { mode: 'spritesheet', width: 640, time: '0s', duration: '10s' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toBe('spritesheet:test.mp4:w=640:t=0s:d=10s');
+	});
+
+	it('includes audio params', () => {
+		const params: TransformParams = { mode: 'audio', time: '0s', duration: '30s' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toBe('audio:test.mp4:t=0s:d=30s');
+	});
+
+	it('omits undefined fields', () => {
+		const params: TransformParams = { width: 640 };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toBe('video:test.mp4:w=640');
+	});
+
+	it('produces identical keys for the same inputs', () => {
+		const params: TransformParams = { width: 1280, height: 720, derivative: 'tablet', compression: 'auto' };
+		const key1 = buildCacheKey('/big_buck_bunny.mov', params);
+		const key2 = buildCacheKey('/big_buck_bunny.mov', params);
+		expect(key1).toBe(key2);
+	});
+
+	it('ignores derivative name in key (dimensions are canonical)', () => {
+		// The derivative name is NOT part of the key — only the resolved
+		// dimensions matter. This ensures ?derivative=tablet and
+		// ?width=1280&height=720 produce the same key.
+		const withDerivative: TransformParams = { width: 1280, height: 720, derivative: 'tablet' };
+		const withoutDerivative: TransformParams = { width: 1280, height: 720 };
+		expect(buildCacheKey('/test.mp4', withDerivative)).toBe(buildCacheKey('/test.mp4', withoutDerivative));
+	});
+
+	it('appends version when provided', () => {
+		const params: TransformParams = { width: 640 };
+		const key = buildCacheKey('/test.mp4', params, 3);
+		expect(key).toBe('video:test.mp4:w=640:v=3');
+	});
+
+	it('sanitizes spaces and special chars in path', () => {
+		const params: TransformParams = { width: 640 };
+		const key = buildCacheKey('/my videos/test file.mp4', params);
+		expect(key).toMatch(/^video:my-videos\/test-file\.mp4:w=640$/);
+	});
+});
