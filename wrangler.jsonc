@@ -4,13 +4,22 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-03-10",
 	"compatibility_flags": ["nodejs_compat"],
-	"observability": { "enabled": true },
+	"account_id": "25f21f141824546aa72c74451a11b419",
+	"workers_dev": false,
+	"observability": {
+		"enabled": true,
+		"logs": { "invocation_logs": true },
+	},
 	"media": { "binding": "MEDIA" },
-	// Bindings to add when deploying:
-	// "r2_buckets": [{ "binding": "VIDEOS", "bucket_name": "..." }],
-	// "kv_namespaces": [
-	//   { "binding": "CONFIG", "id": "..." },
-	//   { "binding": "CACHE_VERSIONS", "id": "..." }
-	// ],
-	// "assets": { "directory": "./debug-ui/dist", "binding": "ASSETS" }
+	"r2_buckets": [{ "binding": "VIDEOS", "bucket_name": "videos" }],
+	"kv_namespaces": [
+		{ "binding": "CONFIG", "id": "96e2e31372ac424699539b1bca50b18f" },
+		{ "binding": "CACHE_VERSIONS", "id": "548a5f4f87824d758542ace666293216" },
+	],
+	"routes": [
+		{
+			"pattern": "cdn.erfi.dev",
+			"custom_domain": true,
+		},
+	],
 }

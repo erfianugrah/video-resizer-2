@@ -1,0 +1,80 @@
+{
+	"origins": [
+		{
+			"name": "videos",
+			"matcher": "^/videos/([^.]+)\\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv)",
+			"captureGroups": ["videoId", "extension"],
+			"sources": [
+				{ "type": "r2", "priority": 0, "bucketBinding": "VIDEOS" },
+				{ "type": "remote", "priority": 1, "url": "https://videos.erfi.dev" },
+				{ "type": "fallback", "priority": 2, "url": "https://cdn.erfi.dev" }
+			],
+			"ttl": { "ok": 3600, "redirects": 300, "clientError": 60, "serverError": 10 },
+			"useTtlByStatus": true,
+			"videoCompression": "auto"
+		},
+		{
+			"name": "popular",
+			"matcher": "^/popular/([^.]+)\\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv)",
+			"captureGroups": ["videoId", "extension"],
+			"sources": [
+				{ "type": "r2", "priority": 0, "bucketBinding": "VIDEOS" },
+				{ "type": "remote", "priority": 1, "url": "https://videos.erfi.dev" }
+			],
+			"ttl": { "ok": 604800, "redirects": 300, "clientError": 60, "serverError": 10 },
+			"useTtlByStatus": true,
+			"videoCompression": "auto"
+		},
+		{
+			"name": "shorts",
+			"matcher": "^/shorts/([^.]+)\\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv)",
+			"captureGroups": ["videoId", "extension"],
+			"sources": [
+				{ "type": "r2", "priority": 0, "bucketBinding": "VIDEOS" },
+				{ "type": "remote", "priority": 1, "url": "https://videos.erfi.dev" }
+			],
+			"ttl": { "ok": 172800, "redirects": 300, "clientError": 60, "serverError": 10 },
+			"useTtlByStatus": true,
+			"quality": "medium",
+			"videoCompression": "auto"
+		},
+		{
+			"name": "standard",
+			"matcher": "^/([^.]+)\\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v|3gp|ogv)",
+			"captureGroups": ["videoId", "extension"],
+			"sources": [
+				{ "type": "remote", "priority": 0, "url": "https://videos.erfi.dev" },
+				{ "type": "r2", "priority": 1, "bucketBinding": "VIDEOS" }
+			],
+			"ttl": { "ok": 86400, "redirects": 300, "clientError": 60, "serverError": 10 },
+			"useTtlByStatus": true,
+			"videoCompression": "auto"
+		},
+		{
+			"name": "default",
+			"matcher": ".*",
+			"sources": [{ "type": "remote", "priority": 0, "url": "https://videos.erfi.dev" }],
+			"ttl": { "ok": 300, "redirects": 300, "clientError": 60, "serverError": 10 },
+			"useTtlByStatus": true,
+			"videoCompression": "auto"
+		}
+	],
+	"derivatives": {
+		"desktop": { "width": 1920, "height": 1080, "fit": "contain", "duration": "5m" },
+		"tablet": { "width": 1280, "height": 720, "fit": "contain", "duration": "5m" },
+		"mobile": { "width": 854, "height": 640, "fit": "contain", "duration": "5m" },
+		"thumbnail": { "width": 640, "height": 360, "mode": "frame", "format": "png", "fit": "cover", "time": "2s" }
+	},
+	"responsive": {
+		"breakpoints": [
+			{ "maxWidth": 854, "derivative": "mobile" },
+			{ "maxWidth": 1280, "derivative": "tablet" },
+			{ "maxWidth": 99999, "derivative": "desktop" }
+		],
+		"defaultDerivative": "desktop"
+	},
+	"passthrough": {
+		"enabled": true,
+		"formats": ["mp4", "webm", "mov"]
+	}
+}
