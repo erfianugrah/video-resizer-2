@@ -276,31 +276,24 @@ export async function transformHandler(c: HonoContext) {
 						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
 
 						if (object.size > 256 * 1024 * 1024) {
-							// Very large (>256MB): use URL-based async container
+							// Very large (>256MB): use URL-based async container.
+							// Dedup is handled by the DO itself — each unique transform
+							// gets its own DO instance (via paramsHash in the instance key),
+							// and the DO rejects duplicate jobs when one is in flight.
 							const pendingCacheKey = buildCacheKey(path, params, undefined, etag);
-							const pendingKvKey = `container-pending:${pendingCacheKey}`;
-
-							// Dedup: only fire one container job per unique transform.
-							// KV key with 15-min TTL prevents duplicate jobs from retries/polls.
-							const alreadyPending = await c.env.CACHE_VERSIONS.get(pendingKvKey);
-							if (!alreadyPending) {
-								const callbackUrl = toCallbackUrl(zoneHost, `/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(pendingCacheKey)}&requestUrl=${encodeURIComponent(requestUrl)}`);
-								const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
-								const fetchableUrl = remoteSource && 'url' in remoteSource
-									? remoteSource.url.replace(/\/+$/, '') + path
-									: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
-								rlog.info('R2 object too large for sync, firing async container', {
-									size: object.size, fetchableUrl, callbackUrl,
-								});
-								await c.env.CACHE_VERSIONS.put(pendingKvKey, String(Date.now()), { expirationTtl: 900 });
-								c.executionCtx.waitUntil(
-									transformViaContainerUrl(c.env.FFMPEG_CONTAINER, fetchableUrl, params, instanceKey, callbackUrl)
-										.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
-										.catch((err: unknown) => rlog.error('Async container failed', { error: err instanceof Error ? err.message : String(err) })),
-								);
-							} else {
-								rlog.info('Container job already pending, skipping duplicate', { pendingCacheKey });
-							}
+							const callbackUrl = toCallbackUrl(zoneHost, `/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(pendingCacheKey)}&requestUrl=${encodeURIComponent(requestUrl)}`);
+							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
+							const fetchableUrl = remoteSource && 'url' in remoteSource
+								? remoteSource.url.replace(/\/+$/, '') + path
+								: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
+							rlog.info('R2 object too large for sync, firing async container', {
+								size: object.size, fetchableUrl, callbackUrl,
+							});
+							c.executionCtx.waitUntil(
+								transformViaContainerUrl(c.env.FFMPEG_CONTAINER, fetchableUrl, params, instanceKey, callbackUrl)
+									.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
+									.catch((err: unknown) => rlog.error('Async container failed', { error: err instanceof Error ? err.message : String(err) })),
+							);
 							// Return raw passthrough — next request will get cached transform
 							const passthroughObject = await bucket.get(resolved);
 							if (passthroughObject) {
@@ -374,24 +367,15 @@ export async function transformHandler(c: HonoContext) {
 					if (contentLength > CDN_CGI_SIZE_LIMIT && c.env.FFMPEG_CONTAINER) {
 						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
 						const pendingCacheKey = buildCacheKey(path, params, version);
-						const pendingKvKey = `container-pending:${pendingCacheKey}`;
-
-						// Dedup: only fire one container job per unique transform
-						const alreadyPending = await c.env.CACHE_VERSIONS.get(pendingKvKey);
-						if (!alreadyPending) {
-							const callbackUrl = toCallbackUrl(zoneHost, `/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(pendingCacheKey)}&requestUrl=${encodeURIComponent(requestUrl)}`);
-							rlog.info('Remote source exceeds cdn-cgi limit, firing async container', {
-								size: contentLength, limit: CDN_CGI_SIZE_LIMIT, sourceUrl, callbackUrl,
-							});
-							await c.env.CACHE_VERSIONS.put(pendingKvKey, String(Date.now()), { expirationTtl: 900 });
-							c.executionCtx.waitUntil(
-								transformViaContainerUrl(c.env.FFMPEG_CONTAINER, sourceUrl, params, instanceKey, callbackUrl)
-									.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
-									.catch((err: unknown) => rlog.error('Async container failed', { error: err instanceof Error ? err.message : String(err) })),
-							);
-						} else {
-							rlog.info('Container job already pending, skipping duplicate', { pendingCacheKey });
-						}
+						const callbackUrl = toCallbackUrl(zoneHost, `/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(pendingCacheKey)}&requestUrl=${encodeURIComponent(requestUrl)}`);
+						rlog.info('Remote source exceeds cdn-cgi limit, firing async container', {
+							size: contentLength, limit: CDN_CGI_SIZE_LIMIT, sourceUrl, callbackUrl,
+						});
+						c.executionCtx.waitUntil(
+							transformViaContainerUrl(c.env.FFMPEG_CONTAINER, sourceUrl, params, instanceKey, callbackUrl)
+								.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
+								.catch((err: unknown) => rlog.error('Async container failed', { error: err instanceof Error ? err.message : String(err) })),
+						);
 						// Return immediate passthrough
 						const passthroughResp = await fetch(sourceUrl);
 						if (passthroughResp.ok) {

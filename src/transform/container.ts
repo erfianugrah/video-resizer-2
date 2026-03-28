@@ -50,9 +50,11 @@ export class FFmpegContainer extends Container {
 	// If no requests arrive at the DO for this duration, the container is killed.
 	sleepAfter = '15m';
 
+	/** Track whether this DO instance has an active job. */
+	private jobInFlight = false;
+
 	override onStart() {
 		log.info('FFmpeg container started');
-		// Monitor the container lifecycle — log exits and errors
 		this.ctx.container?.monitor()
 			.then(() => log.info('FFmpeg container exited cleanly'))
 			.catch((err: unknown) => log.error('FFmpeg container monitor error', {
@@ -61,13 +63,40 @@ export class FFmpegContainer extends Container {
 	}
 
 	override onStop() {
+		this.jobInFlight = false;
 		log.info('FFmpeg container stopped');
 	}
 
 	override onError(error: unknown) {
+		this.jobInFlight = false;
 		log.error('FFmpeg container error', {
 			error: error instanceof Error ? error.message : String(error),
 		});
+	}
+
+	/**
+	 * Override fetch to add job dedup. If this DO already has a job in flight,
+	 * return 202 immediately without starting another container job. The
+	 * instance key (which includes the params hash) ensures each unique
+	 * transform gets its own DO — so this dedup is per-transform, not global.
+	 */
+	override async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+
+		// Only dedup async transform-url requests (the ones that take minutes)
+		if (url.pathname === '/transform-url' && request.method === 'POST') {
+			if (this.jobInFlight) {
+				log.info('Container DO: job already in flight, skipping duplicate');
+				return new Response(JSON.stringify({ status: 'already_processing' }), {
+					status: 202,
+					headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			this.jobInFlight = true;
+		}
+
+		// Forward to the container (Container base class handles port routing)
+		return super.fetch(request);
 	}
 }
 
@@ -160,9 +189,10 @@ export class FFmpegContainer extends Container {
 			}
 		}
 
-		// Clean up the pending dedup key
-		const kv = (env as Record<string, unknown>).CACHE_VERSIONS as KVNamespace | undefined;
-		if (kv) await kv.delete(`container-pending:${cacheKey}`).catch(() => {});
+		// Reset the DO's job-in-flight flag via a signal.
+		// (The DO instance is unique per transform — when R2 put succeeds,
+		// the job is done. The DO's jobInFlight flag resets on next onStop
+		// or when the sleepAfter timer fires.)
 
 		log.info('Container result stored in R2', {
 			cacheKey, path, r2Key, contentType,

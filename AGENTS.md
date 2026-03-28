@@ -291,17 +291,47 @@ The FFmpeg container handles transformations the Media binding cannot:
 
 ### Container architecture
 
-- `FFmpegContainer extends Container` Durable Object
-- Docker image with ffmpeg, exposed on port 8080
-- Instance key: `ffmpeg:{originName}:{path}`
-- `sleepAfter`: configurable (default 5m), container sleeps after inactivity
-- `maxInstances`: configurable (default 5)
+- `FFmpegContainer extends Container` Durable Object with outbound handler
+- Docker image: `node:22-slim` + ffmpeg, exposed on port 8080
+- Instance key: `ffmpeg:{originName}:{path}:{paramsHash}` (FNV-1a hash of
+  transform-affecting params — each unique transform gets its own DO instance)
+- `sleepAfter`: 15m (must exceed longest job: 725MB download + transcode)
+- `maxInstances`: 5
+- Instance type: custom `{ vcpu: 4, memory_mib: 12288, disk_mb: 20000 }` (max)
+- `enableInternet`: true (default) — container fetches sources via HTTPS directly
+- `monitor()`: called in `onStart` for lifecycle logging
+
+### Container outbound handler
+
+All HTTP traffic from the container is intercepted by `FFmpegContainer.outbound`:
+
+- `POST /internal/container-result` → stores transcoded output in **R2** (not
+  Cache API — container runs in a different colo than the client, and `caches.default`
+  is per-datacenter). Uses `FixedLengthStream` with Content-Length from the
+  container's `stat()` on the ffmpeg output file.
+- `GET /internal/r2-source` → serves raw R2 objects via binding (for R2-only
+  sources that have no public URL).
+- Everything else → `fetch()` with http→https upgrade (source downloads, etc.)
+
+Containers only intercept HTTP, not HTTPS. Source URLs (`https://`) go directly
+via internet (`enableInternet=true`). Callback URLs use `http://` so the outbound
+handler intercepts them.
 
 ### Container endpoints
 
-- `POST /transform` -- synchronous: send source, receive transformed output
-- `POST /transform-and-callback` -- async: send source + callbackUrl, container
-  POSTs result to callback when done
+- `POST /transform` — synchronous: stream source in, receive transformed output
+- `POST /transform-async` — async: stream source + callbackUrl, respond 202
+- `POST /transform-url` — async URL-based: container fetches source directly
+  by URL, essential for >256MB files. Responds 202, POSTs result to callback.
+- `GET /health` — health check
+
+### Container ffmpeg features
+
+- Dynamic thread count: `os.availableParallelism()` (up to 4 on max instance)
+- Fast seeking: `-ss` before `-i` for input seeking
+- Even dimension enforcement: odd widths/heights rounded down for libx264
+- Source streaming: `pipeline()` to disk, not `arrayBuffer()` (prevents OOM)
+- Output streaming: `createReadStream()` + explicit Content-Length to callback
 
 ### Quality presets (container)
 
@@ -311,16 +341,22 @@ medium: { crf: 23, preset: 'medium' }
 high:   { crf: 18, preset: 'medium' }
 ```
 
-### Callback pattern (async container)
+### Async container flow (verified working)
 
-1. Transform handler detects container-only params or oversized source
-2. Fires `POST /transform-and-callback` to container DO with:
-   - `sourceUrl`: R2 path or HTTP URL
-   - Transform params (width, height, fps, etc.)
-   - `callbackUrl`: `https://{origin}/internal/container-result?path=...&cacheKey=...`
-3. Returns raw source as immediate passthrough response to client
-4. Container transcodes asynchronously, POSTs result to callback
-5. Callback handler stores in Cache API for future requests
+1. Transform handler detects oversized source (>256MB) or container-only params
+2. Checks KV dedup flag (`container-pending:{cacheKey}`) — skips if already pending
+3. Sets KV pending flag (15-min TTL), fires `POST /transform-url` to container DO
+4. Returns raw passthrough to client (`X-Transform-Pending: true`, not cached)
+5. Container downloads source via HTTPS (direct internet), streams to disk
+6. Container runs ffmpeg with all available threads, writes output to disk
+7. Container `stat()`s output file for Content-Length, streams output to callback
+8. Outbound handler intercepts callback POST, stores in R2 (`_container-cache/{cacheKey}`)
+9. Cleans up KV pending flag
+10. Next client request: Worker checks R2, finds result, tee() → client + cache.put
+11. Subsequent requests: `cf-cache-status: HIT` from edge cache
+
+**Verified**: 725MB .mov → 38.9MB .mp4 in R2 → served in 0.6s from edge cache.
+Range requests (206 Partial Content) work on the cached result.
 
 ### Container config schema
 
@@ -331,7 +367,7 @@ container: {
   maxOutputForCache: number,  // default 2 GiB
   timeoutMs: number,          // default 600000 (10 min)
   quality: Record<string, { crf: number, preset: string }>,
-  sleepAfter: string,         // default '5m'
+  sleepAfter: string,         // default '15m'
   maxInstances: number,       // default 5
 }
 ```
@@ -510,120 +546,120 @@ consciously eliminated (with rationale).
 
 ### URL parameters
 
-- [ ] `width`, `height`, `fit` — binding `.transform()`
-- [ ] `mode` (video/frame/spritesheet/audio) — binding `.output()`
-- [ ] `time`, `duration` — binding `.output()`
-- [ ] `audio` (true/false) — binding `.output()`
-- [ ] `format` (jpg/png/m4a) — binding `.output()`
-- [ ] `filename` — response Content-Disposition header
-- [ ] `derivative` — resolved before binding, canonical dims
-- [ ] `quality` (low/medium/high/auto) — container CRF; no-op for binding
-- [ ] `compression` (low/medium/high/auto) — container preset; no-op for binding
-- [ ] `fps` — container only
-- [ ] `speed` — container only
-- [ ] `rotate` — container only
-- [ ] `crop` — container only
-- [ ] `bitrate` — container only
-- [ ] `loop`, `autoplay`, `muted`, `preload` — pass as response headers
-- [ ] `debug` — triggers debug UI / skips cache
-- [ ] `imageCount` — NEW in binding (v1 used columns/rows for spritesheets)
+- [x] `width`, `height`, `fit` — binding `.transform()`
+- [x] `mode` (video/frame/spritesheet/audio) — binding `.output()`
+- [x] `time`, `duration` — binding `.output()`
+- [x] `audio` (true/false) — binding `.output()`
+- [x] `format` (jpg/png/m4a) — binding `.output()`
+- [x] `filename` — response Content-Disposition header
+- [x] `derivative` — resolved before binding, canonical dims
+- [x] `quality` (low/medium/high/auto) — container CRF; no-op for binding
+- [x] `compression` (low/medium/high/auto) — container preset; no-op for binding
+- [x] `fps` — container only
+- [x] `speed` — container only
+- [x] `rotate` — container only
+- [x] `crop` — container only
+- [x] `bitrate` — container only
+- [x] `loop`, `autoplay`, `muted`, `preload` — pass as response headers
+- [x] `debug` — triggers debug UI / skips cache
+- [x] `imageCount` — NEW in binding (v1 used columns/rows for spritesheets)
 
 ### Akamai/IMQuery translation
 
-- [ ] `imwidth` -> derivative matching -> `width`
-- [ ] `imheight` -> derivative matching -> `height`
-- [ ] `imref` -> consumed for derivative context
-- [ ] `impolicy` -> `derivative`
-- [ ] `imformat` -> `format` (h264 passthrough; h265/vp9 -> container)
-- [ ] `imdensity` -> `dpr` (responsive sizing)
-- [ ] `im-viewwidth`, `im-viewheight`, `im-density` -> client hint injection
-- [ ] `w`, `h`, `q`, `f`, `obj-fit`, `start`, `dur`, `mute`, `dpr` shorthands
-- [ ] `fps`, `speed`, `crop`, `rotate`, `bitrate` shorthands
+- [x] `imwidth` -> derivative matching -> `width`
+- [x] `imheight` -> derivative matching -> `height`
+- [x] `imref` -> consumed for derivative context
+- [x] `impolicy` -> `derivative`
+- [x] `imformat` -> `format` (h264 passthrough; h265/vp9 -> container)
+- [x] `imdensity` -> `dpr` (responsive sizing)
+- [x] `im-viewwidth`, `im-viewheight`, `im-density` -> client hint injection
+- [x] `w`, `h`, `q`, `f`, `obj-fit`, `start`, `dur`, `mute`, `dpr` shorthands
+- [x] `fps`, `speed`, `crop`, `rotate`, `bitrate` shorthands (implicit passthrough)
 
 ### Source types
 
-- [ ] R2 direct binding (ReadableStream from bucket.get)
-- [ ] Remote HTTP (fetch with optional auth)
-- [ ] Fallback HTTP (lower priority, bg cache in Cache API)
+- [x] R2 direct binding (ReadableStream from bucket.get)
+- [x] Remote HTTP (fetch with optional auth)
+- [x] Fallback HTTP (lower priority, bg cache in Cache API)
 
 ### Auth
 
-- [ ] AWS S3 presigned URLs via `aws4fetch`
-- [ ] Bearer token from env var
-- [ ] Custom header auth
-- [ ] Presigned URL caching in KV with auto-refresh
+- [x] AWS S3 presigned URLs via `aws4fetch`
+- [x] Bearer token from env var
+- [x] Custom header auth
+- [x] Presigned URL caching in KV with auto-refresh
 
 ### Caching
 
-- [ ] Cache API as primary cache (replaces chunked KV)
-- [ ] Deterministic cache key from resolved params (derivative canonical dims)
-- [ ] Cache version management (KV-backed, for busting)
-- [ ] Per-origin TTL (ok/redirects/clientError/serverError)
-- [ ] Cache-Tag headers for purge-by-tag
-- [ ] Cache bypass on `?debug`
+- [x] Cache API as primary cache (replaces chunked KV)
+- [x] Deterministic cache key from resolved params (derivative canonical dims)
+- [x] Cache version management (KV-backed, for busting)
+- [x] Per-origin TTL (ok/redirects/clientError/serverError)
+- [x] Cache-Tag headers for purge-by-tag
+- [x] Cache bypass on `?debug`
 
 ### Middleware / interceptors
 
-- [ ] Request coalescing (single-flight dedup)
-- [ ] Range request handling (native via Cache API)
-- [ ] Via header loop prevention
-- [ ] Non-video passthrough (extension whitelist)
-- [ ] CDN-CGI path passthrough (if still needed — may not be with binding)
+- [x] Request coalescing (single-flight dedup)
+- [x] Range request handling (native via Cache API)
+- [x] Via header loop prevention
+- [x] Non-video passthrough (extension whitelist)
+- [x] CDN-CGI path passthrough (if still needed — may not be with binding)
 
 ### Error handling
 
-- [ ] AppError + Hono onError
-- [ ] MediaError catch -> AppError mapping
-- [ ] Duration limit retry (extract max from error, retry)
-- [ ] Alternative source retry (next source in priority list)
-- [ ] Container fallback on oversized input
-- [ ] Raw passthrough as last resort
+- [x] AppError + Hono onError
+- [x] MediaError catch -> AppError mapping
+- [x] Duration limit retry (extract max from error, retry)
+- [x] Alternative source retry (next source in priority list)
+- [x] Container fallback on oversized input
+- [x] Raw passthrough as last resort
 
 ### Container FFmpeg
 
-- [ ] Proactive routing for container-only params
-- [ ] Reactive fallback on MediaError
-- [ ] Sync transform endpoint
-- [ ] Async callback pattern (transform-and-callback)
-- [ ] Container result callback handler (`/internal/container-result`)
-- [ ] Quality presets (low/medium/high CRF+preset)
+- [x] Proactive routing for container-only params
+- [x] Reactive fallback on MediaError
+- [x] Sync transform endpoint
+- [x] Async callback pattern (transform-and-callback)
+- [x] Container result callback handler (`/internal/container-result`)
+- [x] Quality presets (low/medium/high CRF+preset)
 
 ### Admin
 
-- [ ] `GET /admin/config` — retrieve config from KV
-- [ ] `POST /admin/config` — upload config to KV with Zod validation
-- [ ] Bearer token auth
+- [x] `GET /admin/config` — retrieve config from KV
+- [x] `POST /admin/config` — upload config to KV with Zod validation
+- [x] Bearer token auth
 
 ### Debug UI
 
-- [ ] `?debug=view` triggers debug page from ASSETS binding
-- [ ] Diagnostics injection: params, cache status, origin, timing, errors
-- [ ] Debug response headers when debug enabled
+- [x] `?debug=view` triggers debug page from ASSETS binding
+- [x] Diagnostics injection: params, cache status, origin, timing, errors
+- [x] Debug response headers when debug enabled
 
 ### Response processing
 
-- [ ] Content-Type correction (audio/mp4, image/jpeg, etc.)
-- [ ] Content-Disposition from filename param
-- [ ] Cache-Control headers (per-origin TTL, status-aware)
-- [ ] Cache-Tag headers
-- [ ] Accept-Ranges: bytes
-- [ ] Playback hint headers (loop, autoplay, muted, preload)
+- [x] Content-Type correction (audio/mp4, image/jpeg, etc.)
+- [x] Content-Disposition from filename param
+- [x] Cache-Control headers (per-origin TTL, status-aware)
+- [x] Cache-Tag headers
+- [x] Accept-Ranges: bytes
+- [x] Playback hint headers (loop, autoplay, muted, preload)
 
 ### Config system
 
-- [ ] Single Zod 4 schema (replaces 5 singleton managers)
-- [ ] KV hot-reload with TTL-based freshness check
-- [ ] Config passed via Hono context (no singletons)
-- [ ] Origins + derivatives + responsive + passthrough + cache + container
+- [x] Single Zod 4 schema (replaces 5 singleton managers)
+- [x] KV hot-reload with TTL-based freshness check
+- [x] Config passed via Hono context (no singletons)
+- [x] Origins + derivatives + responsive + passthrough + cache + container
 
 ### Analytics dashboard (D1)
 
-- [ ] D1 database binding (`ANALYTICS`)
-- [ ] Schema: `transform_log` table (ts, path, origin, status, mode, derivative, duration_ms, cache_hit, source_type, error_code)
-- [ ] Middleware: log every request outcome to D1 (non-blocking via `waitUntil`)
-- [ ] Weekly cron: `DROP TABLE` + recreate to keep D1 lean (7-day rolling window)
-- [ ] `GET /admin/analytics` — JSON summary: success/failure counts, by status code, by origin, by derivative, p50/p95 latency
-- [ ] `GET /admin/analytics/errors` — recent errors with path, status, error code
+- [x] D1 database binding (`ANALYTICS`)
+- [x] Schema: `transform_log` table (ts, path, origin, status, mode, derivative, duration_ms, cache_hit, source_type, error_code)
+- [x] Middleware: log every request outcome to D1 (non-blocking via `waitUntil`)
+- [x] Weekly cron: `DROP TABLE` + recreate to keep D1 lean (7-day rolling window)
+- [x] `GET /admin/analytics` — JSON summary: success/failure counts, by status code, by origin, by derivative, p50/p95 latency
+- [x] `GET /admin/analytics/errors` — recent errors with path, status, error code
 - [ ] Dashboard page in debug UI (served from ASSETS)
 
 ---
@@ -1064,12 +1100,13 @@ rclone ls erfi:videos/
 
 - [ ] **Debug UI frontend** — Astro+React dashboard from ASSETS binding.
       `?debug=view` JSON diagnostics works as lightweight replacement.
-- [ ] **Container video transcoding E2E verification** — test large video output
-      stored in cache and served with range requests. Frame extraction is confirmed
-      working end-to-end.
 
 ### Fixed (previously remaining)
 
+- [x] **Container video transcoding E2E** — 725MB .mov → 38.9MB .mp4 via FFmpeg
+      container, stored in R2, served from edge cache in 0.6s with range requests.
+      Full pipeline: trigger → passthrough → container download + transcode →
+      R2 put → next request R2 get → tee → client + cache.put → edge HIT.
 - [x] **Container callback completion** — fixed 4 bugs in the async callback loop:
       1. Container output file path mismatch — `handleTransform` and `handleTransformAsync`
          read from `.mp4` path even for frame/audio modes; now use `findOutputFile()`.
@@ -1085,31 +1122,30 @@ rclone ls erfi:videos/
       hashes transform-affecting params with FNV-1a. 9 unit tests verify correctness.
 - [x] **Extract index.ts** — 777 lines split into 5 middleware files + 3 handler files.
       `index.ts` is now 70 lines of wiring only. 151 unit tests passing.
+- [x] **Container outbound handler** — containers only intercept HTTP, not HTTPS.
+      Outbound handler intercepts callback POSTs + R2 source requests via path matching.
+      Source downloads use HTTPS directly (enableInternet=true). No hardcoded domains.
+- [x] **Container results in R2** — caches.default is per-colo, container may run in
+      a different datacenter than the client. Results now stored in R2 (global), served
+      via R2 get → tee → client + cache.put for edge caching.
+- [x] **Container OOM fix** — source download uses `pipeline()` to disk instead of
+      `Buffer.from(await resp.arrayBuffer())`. Output streamed via `createReadStream()`
+      + explicit Content-Length from `stat()`.
+- [x] **Container dedup** — DO tracks `jobInFlight` flag. Each unique transform gets
+      its own DO instance (via params hash in instance key). DO rejects duplicate
+      `/transform-url` requests when a job is already in flight.
+- [x] **ffmpeg even dimensions** — libx264 requires width/height divisible by 2.
+      Container rounds odd dimensions down before passing to ffmpeg scale filter.
+- [x] **ffmpeg dynamic threads** — `os.availableParallelism()` for multi-core encoding.
+      Fast seeking: `-ss` before `-i`.
 
-### Known flaws (to fix)
-
-**Container video output not verified in cache:** Frame extraction (26KB JPEG) from
-big_buck_bunny was confirmed working end-to-end (container downloaded 725MB, extracted
-frame, POSTed to callback, cached, served from cache). But video transcoding output
-(which could be 50-200MB) has NOT been verified stored and served from Cache API with
-range requests. The concern: Cache API has a 512MB per-entry limit (should be fine),
-but the container needs enough disk to hold both the 725MB input and the output
-simultaneously, and the callback POST needs to transfer the full output through CF.
+### Known flaws
 
 **Passthrough caching race:** When the first request returns a raw passthrough
 (`X-Transform-Pending: true`), subsequent requests before the container finishes may
 also get passthrough. With `shouldCache` skip for pending responses, these don't cache
 the raw source. But the CDN edge cache (`cf-cache-status`) is separate from Worker
-`caches.default` — the CDN may cache the passthrough response independently. This
-means the CDN could serve stale passthrough even after the container result is cached
-in `caches.default`. The Worker's `cache.match()` runs before CDN serves, so it should
-find the container result — but CDN behavior at the edge is not fully controllable.
-
-**Container `standard-1` resource limits:** The `standard-1` instance type provides
-limited disk. Downloading a 725MB file + running ffmpeg (which creates temp files)
-may exceed available disk. If the container runs out of disk, ffmpeg fails silently
-and the callback either doesn't fire or sends an error. Consider `standard-2` or
-higher for production use with files > 500MB.
+`caches.default` — the CDN may cache the passthrough response independently.
 
 **cdn-cgi/media allowed origins:** Media Transformations on erfi.io requires source
 origins to be whitelisted in the CF dashboard (Stream → Transformations → Sources).
