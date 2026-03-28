@@ -614,55 +614,57 @@ test('container: range request on R2-cached result', async () => {
 
 // Container async (725MB) — only with --container flag
 if (includeContainer) {
-	test('container: first request returns passthrough or cached result', async () => {
+	test('container: first request returns 202 or cached result', async () => {
 		const r = await GET(`${HUGE}?imwidth=320`, { timeout: 600_000 });
-		assertEq(r.status, 200, 'status');
-		const pending = h(r, 'x-transform-pending');
-		if (pending === 'true') {
-			assertEq(h(r, 'content-type'), 'video/quicktime', 'raw .mov passthrough');
-			assertGt(sz(r), 700_000_000, 'raw file size');
-		} else {
+		if (r.status === 202) {
+			// Container job triggered, processing
+			assertContains(await r.text(), 'processing', '202 body');
+		} else if (r.status === 200) {
+			// Cached from prior run
 			assertEq(h(r, 'content-type'), 'video/mp4', 'transformed mp4');
 			assertLt(sz(r), 725_000_000, 'smaller than raw');
+		} else {
+			assert(false, `unexpected status ${r.status}`);
 		}
 	});
 
 	test('container: poll for callback result (up to 10 min)', async () => {
-		// Trigger with unique width
 		const width = 313;
 		const url = `${HUGE}?imwidth=${width}`;
 		clearTailLogs();
 		const r1 = await GET(url, { timeout: 600_000 });
-		assertEq(r1.status, 200, 'status');
 
-		if (h(r1, 'x-transform-pending') !== 'true') {
+		if (r1.status === 200 && h(r1, 'content-type') === 'video/mp4') {
 			// Already cached from a prior run
-			assertEq(h(r1, 'content-type'), 'video/mp4', 'already cached');
 			console.log(`    Already cached: ${sz(r1)} bytes`);
 			return;
 		}
+		// 202 = container job triggered, poll for result
+		assert(r1.status === 200 || r1.status === 202, `expected 200 or 202, got ${r1.status}`);
 
-		// Poll: download 725MB + ffmpeg transcode can take 3-6 min
-		console.log('    Polling for container callback (up to 10 min)...');
+		// Poll: container downloads 725MB + ffmpeg transcode, stores in R2
+		console.log('    Polling for container result in R2 (up to 10 min)...');
 		let cached = false;
 		for (let i = 0; i < 60; i++) {
 			await sleep(10_000);
 			process.stdout.write(`    Poll ${i + 1}/60...`);
 			const r = await GET(url, { timeout: 600_000 });
 			const ct = h(r, 'content-type');
-			const pending = h(r, 'x-transform-pending');
-			console.log(` ct=${ct} pending=${pending} size=${sz(r)}`);
-			if (pending !== 'true' && ct === 'video/mp4') {
+			const status = r.status;
+			console.log(` status=${status} ct=${ct} size=${sz(r)} r2=${h(r, 'x-r2-cache')}`);
+			// 200 + video/mp4 = container result stored in R2 and served
+			if (status === 200 && ct === 'video/mp4') {
 				assertLt(sz(r), 725_000_000, 'transformed size');
 				assertGt(sz(r), 0, 'size > 0');
 				cached = true;
 				break;
 			}
+			// 202 = still processing, keep polling
 		}
 		if (!cached) {
 			dumpTailLogs('container poll timeout');
 		}
-		assert(cached, 'Container callback never stored result in cache after 10 minutes');
+		assert(cached, 'Container callback never stored result after 10 minutes');
 	});
 }
 
