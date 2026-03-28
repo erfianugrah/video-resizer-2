@@ -16,6 +16,7 @@ import { execFile } from 'node:child_process';
 import { writeFile, readFile, unlink, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { availableParallelism, cpus } from 'node:os';
 
 const PORT = 8080;
 const WORK_DIR = '/tmp/ffmpeg-work';
@@ -198,12 +199,18 @@ async function handleTransformAsync(req, res) {
  * Build ffmpeg command-line arguments from transform params.
  */
 function buildFfmpegArgs(inputPath, outputPath, params) {
-	const args = ['-y', '-i', inputPath];
+	// Use all available CPU cores for encoding. With custom instance types
+	// (up to 4 vCPU), this can cut transcode time by 3-4x.
+	const cpuCount = availableParallelism?.() ?? cpus().length;
+	const args = ['-y', '-threads', String(cpuCount)];
 
-	// Time offset
+	// Time offset — placed BEFORE -i for fast input seeking (avoids
+	// decoding everything before the seek point).
 	if (params.time) {
 		args.push('-ss', params.time);
 	}
+
+	args.push('-i', inputPath);
 
 	// Duration
 	if (params.duration) {
@@ -214,9 +221,12 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 	const vf = [];
 
 	// Scale (width/height)
+	// libx264 requires both dimensions to be divisible by 2.
+	// -2 auto-calculates the other dimension as even, but user-specified
+	// dimensions must also be forced even (round down).
 	if (params.width || params.height) {
-		const w = params.width || -2;
-		const h = params.height || -2;
+		const w = params.width ? (params.width % 2 === 0 ? params.width : params.width - 1) : -2;
+		const h = params.height ? (params.height % 2 === 0 ? params.height : params.height - 1) : -2;
 		vf.push(`scale=${w}:${h}`);
 	}
 
@@ -311,7 +321,9 @@ function runFfmpeg(args) {
 		execFile('ffmpeg', args, { maxBuffer: 50 * 1024 * 1024 }, (err, stdout, stderr) => {
 			if (err) {
 				console.error('ffmpeg stderr:', stderr);
-				reject(new Error(`ffmpeg failed: ${err.message}`));
+				// Include the last 2000 chars of stderr — that's where the actual error is
+				const stderrTail = stderr ? stderr.slice(-2000) : '';
+				reject(new Error(`ffmpeg failed (exit ${err.code}): ${stderrTail}`));
 			} else {
 				resolve({ stdout, stderr });
 			}
@@ -403,7 +415,8 @@ async function processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputP
 
 		console.log(`[${id}] Async: fetching source from ${sourceUrl}`);
 		const resp = await fetch(sourceUrl);
-		if (!resp.ok) throw new Error(`Source fetch failed: ${resp.status}`);
+		console.log(`[${id}] Async: source response: status=${resp.status} content-type=${resp.headers.get('content-type')} content-length=${resp.headers.get('content-length')} redirected=${resp.redirected} url=${resp.url}`);
+		if (!resp.ok) throw new Error(`Source fetch failed: ${resp.status} ${resp.statusText} (url: ${resp.url})`);
 
 		const buffer = Buffer.from(await resp.arrayBuffer());
 		await writeFile(inputPath, buffer);

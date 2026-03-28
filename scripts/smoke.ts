@@ -4,11 +4,14 @@
  *
  * Usage:
  *   npx tsx scripts/smoke.ts              # run all tests
- *   npx tsx scripts/smoke.ts --container  # include container polling (slow, ~3min)
+ *   npx tsx scripts/smoke.ts --container  # include container polling (slow, ~6min)
  *   npx tsx scripts/smoke.ts --only cache # run only tests matching "cache"
+ *   npx tsx scripts/smoke.ts --tail       # capture wrangler tail logs alongside tests
  *
- * No dependencies — just fetch + console output.
+ * No dependencies — just fetch + console output + optional child_process for tail.
  */
+
+import { spawn, type ChildProcess } from 'node:child_process';
 
 const BASE = 'https://videos.erfi.io';
 const SMALL = '/rocky.mp4';
@@ -22,9 +25,61 @@ let failed = 0;
 let skipped = 0;
 const failures: string[] = [];
 
-const args = process.argv.slice(2);
-const includeContainer = args.includes('--container');
-const onlyFilter = args.indexOf('--only') !== -1 ? args[args.indexOf('--only') + 1]?.toLowerCase() : null;
+const cliArgs = process.argv.slice(2);
+const includeContainer = cliArgs.includes('--container');
+const includeTail = cliArgs.includes('--tail') || cliArgs.includes('--container');
+const onlyFilter = cliArgs.indexOf('--only') !== -1 ? cliArgs[cliArgs.indexOf('--only') + 1]?.toLowerCase() : null;
+
+// ── Tail log capture ─────────────────────────────────────────────────────
+
+let tailProc: ChildProcess | null = null;
+const tailLogs: string[] = [];
+
+function startTail() {
+	if (!includeTail) return;
+	try {
+		tailProc = spawn('npx', ['wrangler', 'tail', '--format', 'pretty'], {
+			stdio: ['ignore', 'pipe', 'pipe'],
+			shell: true,
+		});
+		tailProc.stdout?.on('data', (chunk: Buffer) => {
+			const lines = chunk.toString().split('\n').filter(Boolean);
+			for (const line of lines) {
+				tailLogs.push(line);
+				// Keep last 200 lines
+				if (tailLogs.length > 200) tailLogs.shift();
+			}
+		});
+		tailProc.stderr?.on('data', (chunk: Buffer) => {
+			// Ignore wrangler startup noise
+		});
+		console.log('  \x1b[90m[tail] wrangler tail started\x1b[0m');
+	} catch {
+		console.log('  \x1b[33m[tail] failed to start wrangler tail\x1b[0m');
+	}
+}
+
+function stopTail() {
+	if (tailProc) {
+		tailProc.kill();
+		tailProc = null;
+	}
+}
+
+function dumpTailLogs(label: string) {
+	if (tailLogs.length === 0) return;
+	console.log(`\n  \x1b[90m── Tail logs (${label}) ──\x1b[0m`);
+	// Show the last 30 lines
+	const recent = tailLogs.slice(-30);
+	for (const line of recent) {
+		console.log(`  \x1b[90m${line}\x1b[0m`);
+	}
+	console.log(`  \x1b[90m── (${tailLogs.length} total lines captured) ──\x1b[0m\n`);
+}
+
+function clearTailLogs() {
+	tailLogs.length = 0;
+}
 
 async function GET(path: string, opts?: { headers?: Record<string, string>; timeout?: number }): Promise<Response> {
 	const timeout = opts?.timeout ?? 30_000;
@@ -379,24 +434,27 @@ if (includeContainer) {
 		}
 	});
 
-	test('container: poll for callback result (up to 3 min)', async () => {
+	test('container: poll for callback result (up to 6 min)', async () => {
 		// Trigger with unique width
 		const width = 313;
 		const url = `${HUGE}?imwidth=${width}`;
+		clearTailLogs();
 		const r1 = await GET(url, { timeout: 60_000 });
 		assertEq(r1.status, 200, 'status');
 
 		if (h(r1, 'x-transform-pending') !== 'true') {
-			// Already cached
+			// Already cached from a prior run
 			assertEq(h(r1, 'content-type'), 'video/mp4', 'already cached');
+			console.log(`    Already cached: ${sz(r1)} bytes`);
 			return;
 		}
 
-		console.log('    Polling for container callback...');
+		// Poll: download 725MB + ffmpeg transcode can take 3-6 min
+		console.log('    Polling for container callback (up to 6 min)...');
 		let cached = false;
-		for (let i = 0; i < 18; i++) {
+		for (let i = 0; i < 36; i++) {
 			await sleep(10_000);
-			process.stdout.write(`    Poll ${i + 1}/18...`);
+			process.stdout.write(`    Poll ${i + 1}/36...`);
 			const r = await GET(url, { timeout: 60_000 });
 			const ct = h(r, 'content-type');
 			const pending = h(r, 'x-transform-pending');
@@ -408,7 +466,10 @@ if (includeContainer) {
 				break;
 			}
 		}
-		assert(cached, 'Container callback never stored result in cache after 3 minutes');
+		if (!cached) {
+			dumpTailLogs('container poll timeout');
+		}
+		assert(cached, 'Container callback never stored result in cache after 6 minutes');
 	});
 }
 
@@ -417,7 +478,11 @@ if (includeContainer) {
 async function run() {
 	const t0 = performance.now();
 	console.log(`\nSmoke test: ${BASE}`);
-	console.log(`Tests: ${checks.length}${onlyFilter ? ` (filter: "${onlyFilter}")` : ''}\n`);
+	console.log(`Tests: ${checks.length}${onlyFilter ? ` (filter: "${onlyFilter}")` : ''}${includeTail ? ' [tail enabled]' : ''}\n`);
+
+	startTail();
+	// Give tail a moment to connect
+	if (includeTail) await sleep(3000);
 
 	for (const check of checks) {
 		if (onlyFilter && !check.name.toLowerCase().includes(onlyFilter)) {
@@ -435,10 +500,13 @@ async function run() {
 			const msg = err instanceof Error ? err.message : String(err);
 			console.log(`  \x1b[31m✗\x1b[0m ${check.name} \x1b[90m(${ms}ms)\x1b[0m`);
 			console.log(`    \x1b[31m${msg}\x1b[0m`);
+			dumpTailLogs(check.name);
 			failures.push(`${check.name}: ${msg}`);
 			failed++;
 		}
 	}
+
+	stopTail();
 
 	const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
 	console.log(`\n${passed} passed, ${failed} failed${skipped ? `, ${skipped} skipped` : ''} (${elapsed}s)\n`);

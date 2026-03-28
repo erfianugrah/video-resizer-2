@@ -23,7 +23,12 @@
 		"crons": ["0 0 * * sun"],
 	},
 	"containers": [
-		{ "class_name": "FFmpegContainer", "image": "./container/Dockerfile", "max_instances": 5, "instance_type": "standard-1" },
+		{
+			"class_name": "FFmpegContainer",
+			"image": "./container/Dockerfile",
+			"max_instances": 5,
+			"instance_type": { "vcpu": 4, "memory_mib": 12288, "disk_mb": 20000 },
+		},
 	],
 	"durable_objects": {
 		"bindings": [{ "name": "FFMPEG_CONTAINER", "class_name": "FFmpegContainer" }],

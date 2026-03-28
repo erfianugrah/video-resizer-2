@@ -46,10 +46,18 @@ export { ContainerProxy };
  */
 export class FFmpegContainer extends Container {
 	defaultPort = 8080;
-	sleepAfter = '5m';
+	// Must exceed the longest possible job: 725MB download (~30s) + ffmpeg transcode (~5min).
+	// If no requests arrive at the DO for this duration, the container is killed.
+	sleepAfter = '15m';
 
 	override onStart() {
 		log.info('FFmpeg container started');
+		// Monitor the container lifecycle — log exits and errors
+		this.ctx.container?.monitor()
+			.then(() => log.info('FFmpeg container exited cleanly'))
+			.catch((err: unknown) => log.error('FFmpeg container monitor error', {
+				error: err instanceof Error ? err.message : String(err),
+			}));
 	}
 
 	override onStop() {
@@ -97,7 +105,8 @@ export class FFmpegContainer extends Container {
 		const isError = request.headers.get('X-Transform-Error') === 'true';
 		if (isError) {
 			const errBody = await request.text().catch(() => '');
-			log.error('Container async transform failed', { cacheKey, path, error: errBody.slice(0, 500) });
+			// Log the tail of the error — that's where ffmpeg's actual error message is
+			log.error('Container async transform failed', { cacheKey, path, errorTail: errBody.slice(-1500) });
 			return new Response(JSON.stringify({ ok: false, error: 'transform failed' }), { status: 200 });
 		}
 
@@ -161,7 +170,11 @@ export class FFmpegContainer extends Container {
 	}
 
 	// ── Everything else: proxy through Worker runtime ─────────────────
-	return fetch(request);
+	// Upgrade http:// to https:// before fetching. The container sends
+	// http:// because that's all the outbound handler can intercept, but
+	// the actual remote server expects HTTPS (and would 301 redirect).
+	const upgraded = new Request(request.url.replace(/^http:\/\//, 'https://'), request);
+	return fetch(upgraded);
 };
 
 /**

@@ -28,12 +28,14 @@ type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
 const coalescer = new RequestCoalescer({ maxSize: 500, ttlMs: 300_000 });
 
 /**
- * Downgrade HTTPS URL to HTTP for container outbound interception.
- * Containers can only intercept HTTP traffic — the Worker's outbound
- * handler proxies via fetch() which upgrades to TLS automatically.
+ * Downgrade HTTPS to HTTP for container outbound interception.
+ * Containers can only intercept HTTP traffic. Used ONLY for callback
+ * URLs to our own Worker (which must go through the outbound handler
+ * to access bindings). Source URLs stay HTTPS — the container fetches
+ * them directly via enableInternet=true.
  */
-function toContainerUrl(url: string): string {
-	return url.replace(/^https:\/\//, 'http://');
+function toCallbackUrl(zoneHost: string, path: string): string {
+	return `http://${zoneHost}${path}`;
 }
 
 export async function transformHandler(c: HonoContext) {
@@ -241,9 +243,11 @@ export async function transformHandler(c: HonoContext) {
 							// 1. Prefer remote/fallback source URL if configured
 							// 2. Fall back to /internal/r2-source endpoint (avoids transform loop)
 							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
+							// Source URLs use HTTPS — container fetches directly via internet (enableInternet=true).
+							// R2-only fallback uses http:// to go through outbound handler to access R2 binding.
 							const fetchableUrl = remoteSource && 'url' in remoteSource
-								? toContainerUrl(remoteSource.url.replace(/\/+$/, '') + path)
-								: `http://${zoneHost}/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`;
+								? remoteSource.url.replace(/\/+$/, '') + path
+								: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
 							rlog.info('R2 object too large for sync, using URL-based async container', {
 								size: object.size, fetchableUrl, callbackUrl,
 							});
@@ -333,7 +337,7 @@ export async function transformHandler(c: HonoContext) {
 						});
 
 						c.executionCtx.waitUntil(
-							transformViaContainerUrl(c.env.FFMPEG_CONTAINER, toContainerUrl(sourceUrl), params, instanceKey, callbackUrl)
+							transformViaContainerUrl(c.env.FFMPEG_CONTAINER, sourceUrl, params, instanceKey, callbackUrl)
 								.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
 								.catch((err: unknown) => rlog.error('Async container failed', { error: err instanceof Error ? err.message : String(err) })),
 						);
