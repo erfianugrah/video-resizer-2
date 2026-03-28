@@ -240,8 +240,10 @@ Origins are configured as an array, each with a regex `matcher`, `captureGroups`
 ### Cache layers
 
 1. **Edge cache** (`caches.default`): per-colo, handles range requests natively, Cache-Tag for purge-by-tag
-2. **R2 container cache** (`_container-cache/`): global, for container-produced results
+2. **R2 persistent store** (`_transformed/{cacheKey}`): global, survives cache eviction and cross-colo requests — all transform results (binding, cdn-cgi, container) are stored here
 3. **KV version registry** (`CACHE_VERSIONS`): per-path version number for manual cache busting
+
+On every successful transform, the body is three-way tee'd: client + edge cache.put + R2 put. Subsequent requests check edge cache first, then R2, then transform fresh.
 
 ### Cache key
 
@@ -332,6 +334,20 @@ All endpoints require `Authorization: Bearer {CONFIG_API_TOKEN}`.
 Every request outcome is logged to D1 via `waitUntil` (non-blocking). Weekly cron drops and recreates the table for a 7-day rolling window.
 
 Fields: `ts`, `path`, `origin`, `status`, `mode`, `derivative`, `duration_ms`, `cache_hit`, `transform_source`, `source_type`, `error_code`, `bytes`.
+
+### Dashboard
+
+`/admin/dashboard` — Astro + React + Tailwind v4 dashboard with two tabs:
+
+- **Analytics**: stat cards (total requests, success, errors, cache hit rate), latency metrics (avg, p50, p95), breakdown tables (by status, origin, derivative, transform source), recent errors table with time range selector
+- **Debug**: test any URL with live param resolution, origin matching, response headers, timing, cache status
+
+Auth: HMAC-SHA256 signed session cookie (HttpOnly, Secure, SameSite=Strict, 24h expiry). Login page validates token against `CONFIG_API_TOKEN` with timing-safe comparison.
+
+```bash
+npm run dashboard:build  # rebuild Astro static output
+npm run dashboard:dev    # local Astro dev server
+```
 
 ---
 
