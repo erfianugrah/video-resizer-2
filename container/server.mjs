@@ -276,24 +276,19 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 
 	// Mode-specific (checked before generic -vf push to build combined filter chains)
 	if (params.mode === 'spritesheet') {
-		// Extract N frames and tile them into a single image.
-		// imageCount defaults to 20 if not specified. Layout: ceil(sqrt(N)) columns.
+		// Extract N frames and tile into a single JPEG.
+		// Matches CF Media binding layout: vertical strip (1 column x N rows).
+		// width/height are per-frame dimensions (same as binding behavior).
 		const count = params.imageCount || 20;
-		const cols = Math.ceil(Math.sqrt(count));
-		const rows = Math.ceil(count / cols);
 
-		// Calculate fps to evenly sample `count` frames across the video duration.
-		// If duration is specified, use it. Otherwise use select filter with scene detection
-		// fallback to fps=1 (1 frame/sec) and let -frames:v limit the output.
+		// Calculate fps to evenly sample `count` frames across the video.
 		const dur = params.duration ? parseDuration(String(params.duration)) : null;
 		if (dur && dur > 0) {
-			// Evenly distributed: e.g., 20 frames over 60s = fps=0.333
 			const spriteFps = (count / dur).toFixed(4);
-			vf.push(`fps=${spriteFps}`, `tile=${cols}x${rows}`);
+			vf.push(`fps=${spriteFps}`, `tile=1x${count}`);
 		} else {
-			// No duration known — use select filter to pick N evenly spaced frames.
-			// fps=1 samples 1/sec; tile fills the grid; -frames:v limits output.
-			vf.push('fps=1', `tile=${cols}x${rows}`);
+			// No duration — sample at 1fps, tile vertically
+			vf.push('fps=1', `tile=1x${count}`);
 		}
 		args.push('-vf', vf.join(','));
 		args.push('-frames:v', '1');

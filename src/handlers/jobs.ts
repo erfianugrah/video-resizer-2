@@ -54,6 +54,13 @@ export async function listJobsHandler(c: HonoContext) {
 	const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10), 200);
 	const sinceMs = Date.now() - hours * 3600_000;
 
+	// Server-side staleness: mark jobs active for >20 min as 'stale'.
+	// Queue max_retries=10 x 120s = 20 min. After that, retries exhausted.
+	const STALE_MS = 20 * 60_000;
+	await c.env.ANALYTICS.prepare(
+		`UPDATE transform_jobs SET status = 'stale', error = 'Timed out (queue retries likely exhausted)' WHERE status IN ('pending','downloading','transcoding','uploading') AND created_at < ?`,
+	).bind(Date.now() - STALE_MS).run().catch(() => {});
+
 	let jobs;
 	if (active) {
 		jobs = await listActiveJobs(c.env.ANALYTICS);

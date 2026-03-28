@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 type Tab = 'analytics' | 'jobs' | 'debug';
 
@@ -403,16 +403,15 @@ interface JobRow {
 	output_size: number | null;
 }
 
+const ACTIVE_STATUSES = ['pending', 'downloading', 'transcoding', 'uploading'];
+
 function JobsTab({ token }: { token: string }) {
 	const [jobs, setJobs] = useState<JobRow[]>([]);
 	const [filter, setFilter] = useState('');
 	const [hours, setHours] = useState(24);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState('');
-
-	// WebSocket connections stored in ref (not state — avoids re-render loops)
-	const wsRef = useRef<Map<string, WebSocket>>(new Map());
-	const [liveJobIds, setLiveJobIds] = useState<Set<string>>(new Set());
+	const [pollInterval, setPollInterval] = useState(10);
 
 	const fetchJobs = useCallback(async () => {
 		if (!token) { setError('Enter API token above'); return; }
@@ -435,83 +434,15 @@ function JobsTab({ token }: { token: string }) {
 		}
 	}, [token, hours, filter]);
 
-	// Auto-fetch on mount and every 10s
 	useEffect(() => {
 		fetchJobs();
-		const interval = setInterval(fetchJobs, 10_000);
+		const interval = setInterval(fetchJobs, pollInterval * 1000);
 		return () => clearInterval(interval);
-	}, [fetchJobs]);
+	}, [fetchJobs, pollInterval]);
 
-	// Track which job IDs we've already attempted WebSocket for (avoid reconnect loops)
-	const wsAttemptedRef = useRef<Set<string>>(new Set());
-
-	// Derive active job IDs as a stable string
-	const activeJobIds = jobs
-		.filter((j) => ['pending', 'downloading', 'transcoding', 'uploading'].includes(j.status))
-		.map((j) => j.job_id)
-		.sort()
-		.join(',');
-
-	// Manage WebSocket connections — connect once per job, never reconnect on close
-	useEffect(() => {
-		const ids = activeJobIds ? activeJobIds.split(',') : [];
-		const activeSet = new Set(ids);
-		const ws = wsRef.current;
-		const attempted = wsAttemptedRef.current;
-
-		// Close connections for jobs no longer active
-		for (const [id, socket] of ws) {
-			if (!activeSet.has(id)) {
-				try { socket.close(1000); } catch { /* ignore */ }
-				ws.delete(id);
-				attempted.delete(id);
-			}
-		}
-
-		// Open connections for NEW active jobs (only if never attempted)
-		for (const id of activeSet) {
-			if (ws.has(id) || attempted.has(id)) continue;
-			attempted.add(id);
-			try {
-				const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-				const socket = new WebSocket(`${wsProto}//${window.location.host}/ws/job/${encodeURIComponent(id)}`);
-				socket.onmessage = (event) => {
-					try {
-						const update = JSON.parse(event.data) as { status?: string; progress?: number; error?: string };
-						if (update.status) {
-							setJobs((prev) => prev.map((j) =>
-								j.job_id === id ? { ...j, status: update.status ?? j.status, error: update.error ?? j.error } : j,
-							));
-						}
-					} catch { /* ignore */ }
-				};
-				socket.onclose = () => {
-					ws.delete(id);
-					setLiveJobIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-					// Don't reconnect — REST polling covers status updates
-				};
-				socket.onopen = () => {
-					setLiveJobIds((prev) => new Set(prev).add(id));
-				};
-				ws.set(id, socket);
-			} catch { /* WebSocket failed — REST polling still works */ }
-		}
-
-		setLiveJobIds(new Set([...ws.keys()]));
-	}, [activeJobIds]);
-
-	// Cleanup all WebSockets on unmount
-	useEffect(() => {
-		return () => {
-			for (const [, socket] of wsRef.current) {
-				try { socket.close(1000); } catch { /* ignore */ }
-			}
-			wsRef.current.clear();
-		};
-	}, []);
-
-	const activeJobs = jobs.filter((j) => ['pending', 'downloading', 'transcoding', 'uploading'].includes(j.status));
-	const recentJobs = jobs.filter((j) => !['pending', 'downloading', 'transcoding', 'uploading'].includes(j.status));
+	// D1 is the source of truth — display exactly what it says
+	const activeJobs = jobs.filter((j) => ACTIVE_STATUSES.includes(j.status));
+	const recentJobs = jobs.filter((j) => !ACTIVE_STATUSES.includes(j.status));
 
 	return (
 		<div>
@@ -536,6 +467,17 @@ function JobsTab({ token }: { token: string }) {
 						<option key={h} value={h}>{h}h</option>
 					))}
 				</select>
+				<select
+					value={pollInterval}
+					onChange={(e) => setPollInterval(Number(e.target.value))}
+					className="px-3 py-1.5 text-sm rounded-md border"
+					style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', color: 'var(--text)' }}
+					title="Poll interval"
+				>
+					{[5, 10, 30, 60].map((s) => (
+						<option key={s} value={s}>{s}s</option>
+					))}
+				</select>
 				<button
 					onClick={fetchJobs}
 					disabled={loading}
@@ -553,7 +495,7 @@ function JobsTab({ token }: { token: string }) {
 					<h3 className="text-sm font-medium mb-3">Active ({activeJobs.length})</h3>
 					<div className="space-y-2">
 						{activeJobs.map((job) => (
-							<JobCard key={job.job_id} job={job} isLive={liveJobIds.has(job.job_id)} />
+							<JobCard key={job.job_id} job={job} />
 						))}
 					</div>
 				</div>
@@ -620,7 +562,7 @@ function JobsTab({ token }: { token: string }) {
 	);
 }
 
-function JobCard({ job, isLive }: { job: JobRow; isLive: boolean }) {
+function JobCard({ job }: { job: JobRow }) {
 	const statusColor = {
 		pending: 'var(--text-muted)',
 		downloading: 'var(--accent)',
@@ -640,9 +582,7 @@ function JobCard({ job, isLive }: { job: JobRow; isLive: boolean }) {
 				<div className="flex items-center gap-2">
 					<span className="inline-block w-2 h-2 rounded-full" style={{ background: statusColor }} />
 					<span className="text-sm font-medium capitalize" style={{ color: statusColor }}>{job.status}</span>
-					{isLive && (
-						<span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--accent)', color: 'white', opacity: 0.8 }}>LIVE</span>
-					)}
+				
 					<span className="text-xs" style={{ color: 'var(--text-muted)' }}>
 						{elapsed < 60 ? `${elapsed.toFixed(0)}s` : `${(elapsed / 60).toFixed(1)}m`}
 					</span>
