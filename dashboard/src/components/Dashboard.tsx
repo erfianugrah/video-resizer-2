@@ -438,23 +438,29 @@ function JobsTab({ token }: { token: string }) {
 		return () => clearInterval(interval);
 	}, [fetchJobs]);
 
-	// Manage WebSocket connections for active jobs (separate from fetch cycle)
+	// Track active job IDs as a serialized string to avoid effect re-runs on every poll
+	const activeJobIds = jobs
+		.filter((j) => ['pending', 'downloading', 'transcoding', 'uploading'].includes(j.status))
+		.map((j) => j.job_id)
+		.sort()
+		.join(',');
+
+	// Manage WebSocket connections only when the SET of active job IDs changes
 	useEffect(() => {
-		const activeIds = new Set(
-			jobs.filter((j) => ['pending', 'downloading', 'transcoding', 'uploading'].includes(j.status)).map((j) => j.job_id),
-		);
+		const ids = activeJobIds ? activeJobIds.split(',') : [];
+		const activeSet = new Set(ids);
 		const ws = wsRef.current;
 
 		// Close connections for jobs no longer active
 		for (const [id, socket] of ws) {
-			if (!activeIds.has(id)) {
+			if (!activeSet.has(id)) {
 				try { socket.close(1000); } catch { /* ignore */ }
 				ws.delete(id);
 			}
 		}
 
-		// Open connections for new active jobs (only if not already connected)
-		for (const id of activeIds) {
+		// Open connections for new active jobs
+		for (const id of activeSet) {
 			if (ws.has(id)) continue;
 			try {
 				const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -467,7 +473,7 @@ function JobsTab({ token }: { token: string }) {
 								j.job_id === id ? { ...j, status: update.status ?? j.status, error: update.error ?? j.error } : j,
 							));
 						}
-					} catch { /* ignore parse errors */ }
+					} catch { /* ignore */ }
 				};
 				socket.onclose = () => {
 					ws.delete(id);
@@ -477,12 +483,11 @@ function JobsTab({ token }: { token: string }) {
 					setLiveJobIds((prev) => new Set(prev).add(id));
 				};
 				ws.set(id, socket);
-			} catch { /* WebSocket failed — REST still works */ }
+			} catch { /* WebSocket failed — REST polling still works */ }
 		}
 
-		// Update live indicator
 		setLiveJobIds(new Set([...ws.keys()]));
-	}, [jobs]);
+	}, [activeJobIds]); // Only re-run when the active job ID set changes
 
 	// Cleanup all WebSockets on unmount
 	useEffect(() => {

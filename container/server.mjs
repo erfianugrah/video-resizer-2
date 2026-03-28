@@ -224,14 +224,34 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 	// Video filters
 	const vf = [];
 
-	// Scale (width/height)
+	// Scale (width/height) with fit mode support
 	// libx264 requires both dimensions to be divisible by 2.
 	// -2 auto-calculates the other dimension as even, but user-specified
 	// dimensions must also be forced even (round down).
 	if (params.width || params.height) {
 		const w = params.width ? (params.width % 2 === 0 ? params.width : params.width - 1) : -2;
 		const h = params.height ? (params.height % 2 === 0 ? params.height : params.height - 1) : -2;
-		vf.push(`scale=${w}:${h}`);
+		const fit = params.fit || 'contain';
+
+		if (fit === 'cover' && params.width && params.height) {
+			// Cover: scale UP to fill both dimensions, then center-crop to exact size
+			vf.push(`scale=${w}:${h}:force_original_aspect_ratio=increase`);
+			vf.push(`crop=${w}:${h}`);
+		} else if (fit === 'scale-down') {
+			// Scale-down: only shrink, never enlarge. Maintain aspect ratio.
+			vf.push(`scale='min(${w},iw)':'min(${h},ih)':force_original_aspect_ratio=decrease`);
+			// Ensure even dimensions after clamping
+			vf.push(`pad=ceil(iw/2)*2:ceil(ih/2)*2`);
+		} else {
+			// Contain (default): scale to fit within dimensions, maintain aspect ratio
+			if (params.width && params.height) {
+				vf.push(`scale=${w}:${h}:force_original_aspect_ratio=decrease`);
+				// Ensure even dimensions
+				vf.push(`pad=ceil(iw/2)*2:ceil(ih/2)*2`);
+			} else {
+				vf.push(`scale=${w}:${h}`);
+			}
+		}
 	}
 
 	// FPS
@@ -315,6 +335,17 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 		args.push('-an');
 	} else {
 		args.push('-c:a', 'aac');
+		// Audio speed compensation — when video speed changes via setpts,
+		// audio must be adjusted with atempo to stay in sync.
+		// atempo range is 0.5-2.0; chain multiple for larger ranges.
+		if (params.speed && params.speed !== 1) {
+			const af = [];
+			let remaining = params.speed;
+			while (remaining > 2.0) { af.push('atempo=2.0'); remaining /= 2.0; }
+			while (remaining < 0.5) { af.push('atempo=0.5'); remaining /= 0.5; }
+			af.push(`atempo=${remaining.toFixed(4)}`);
+			args.push('-af', af.join(','));
+		}
 	}
 
 	// Quality preset
@@ -331,7 +362,7 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 	if (params.format === 'h265') {
 		args.push('-c:v', 'libx265');
 	} else if (params.format === 'vp9') {
-		args.push('-c:v', 'libvpx-vp9');
+		args.push('-c:v', 'libvpx-vp9', '-b:v', '0', '-row-mt', '1');
 		const webmOutput = outputPath.replace(/\.mp4$/, '.webm');
 		args.push(webmOutput);
 		return args;
