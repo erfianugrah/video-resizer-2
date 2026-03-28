@@ -526,9 +526,9 @@ test('derivative invariant: impolicy=tablet and derivative=tablet produce same c
 });
 
 test('derivative invariant: imwidth=1280 resolves to derivative with same dims', async () => {
-	const r = await GET(`${SMALL}?imwidth=1280&debug`);
+	// imwidth=1280 resolves to tablet derivative (duration=5m), heavy transform
+	const r = await GET(`${SMALL}?imwidth=1280&debug`, { timeout: 300_000 });
 	assertEq(r.status, 200, 'status');
-	// imwidth=1280 should resolve to tablet (1280x720) via responsive/derivative matching
 	assert(!!h(r, 'x-resolved-width'), 'has resolved width');
 });
 

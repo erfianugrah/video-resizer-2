@@ -412,7 +412,40 @@ export async function transformHandler(c: HonoContext) {
 					rlog.info('Source resolved (cdn-cgi)', { path: resolved, sourceUrl, sourceType, contentLength });
 					const resp = await transformViaCdnCgi(zoneHost, sourceUrl, params, version);
 
-					// If cdn-cgi returns 404/5xx, the source doesn't exist — try next
+					// Check Cf-Resized header for CF error codes (e.g. err=9402).
+					// cdn-cgi may return 200 with an error in this header.
+					const cfResized = resp.headers.get('Cf-Resized') ?? '';
+					const cfErrMatch = cfResized.match(/err=(\d+)/);
+					if (cfErrMatch) {
+						const cfErr = parseInt(cfErrMatch[1], 10);
+						await resp.body?.cancel().catch(() => {});
+						// 9402 = origin too large — route to container if available
+						if (cfErr === 9402 && c.env.FFMPEG_CONTAINER) {
+							rlog.warn('cdn-cgi 9402 (origin too large), routing to container', { sourceUrl, cfErr });
+							const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
+							const pendingCacheKey = buildCacheKey(path, params, version);
+							const callbackUrl = toCallbackUrl(zoneHost, `/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(pendingCacheKey)}&requestUrl=${encodeURIComponent(requestUrl)}`);
+							c.executionCtx.waitUntil(
+								transformViaContainerUrl(c.env.FFMPEG_CONTAINER, sourceUrl, params, instanceKey, callbackUrl)
+									.then((r: Response) => rlog.info('Reactive container accepted', { status: r.status }))
+									.catch((err: unknown) => rlog.error('Reactive container failed', { error: err instanceof Error ? err.message : String(err) })),
+							);
+							return { transformed: new Response(
+								JSON.stringify({ status: 'processing', message: 'Source too large for edge transform. Processing via container.', path }),
+								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '30', 'X-Transform-Pending': 'true' } },
+							), etag, version, sourceType };
+						}
+						// 9404 = not found, 9407 = DNS error, 9504 = unreachable — try next source
+						if (cfErr === 9404 || cfErr === 9407 || cfErr === 9504) {
+							errors.push(`${source.type}(p${source.priority}): cdn-cgi err=${cfErr} for ${resolved}`);
+							continue;
+						}
+						// Other CF errors — log and try next
+						errors.push(`${source.type}(p${source.priority}): cdn-cgi Cf-Resized err=${cfErr}`);
+						continue;
+					}
+
+					// HTTP status checks
 					if (resp.status === 404 || resp.status === 410) {
 						errors.push(`${source.type}(p${source.priority}): cdn-cgi 404 for ${resolved}`);
 						continue;

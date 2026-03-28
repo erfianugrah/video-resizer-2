@@ -232,7 +232,12 @@ export function parseParams(qs: URLSearchParams): TransformParams {
 			raw[key] = value;
 		}
 	}
-	return TransformParamsSchema.parse(raw);
+	const params = TransformParamsSchema.parse(raw);
+	// Auto-switch: format=m4a implies mode=audio (v1 compat)
+	if (params.format === 'm4a' && !params.mode) {
+		return { ...params, mode: 'audio' as const };
+	}
+	return params;
 }
 
 /**
