@@ -179,8 +179,15 @@ export async function transformHandler(c: HonoContext) {
 		headers.set('X-Cache-Key', r2CacheKey);
 		headers.set('X-R2-Cache', 'HIT');
 		if (params.derivative) headers.set('X-Derivative', params.derivative);
+		if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
 		if (params.width) headers.set('X-Resolved-Width', String(params.width));
 		if (params.height) headers.set('X-Resolved-Height', String(params.height));
+
+		// Playback hint headers
+		if (params.loop !== undefined) headers.set('X-Playback-Loop', String(params.loop));
+		if (params.autoplay !== undefined) headers.set('X-Playback-Autoplay', String(params.autoplay));
+		if (params.muted !== undefined) headers.set('X-Playback-Muted', String(params.muted));
+		if (params.preload) headers.set('X-Playback-Preload', params.preload);
 
 		// Cache-Tag for purge-by-tag
 		const tags: string[] = [];
@@ -190,20 +197,21 @@ export async function transformHandler(c: HonoContext) {
 		if (originMatch.origin.cacheTags) tags.push(...originMatch.origin.cacheTags);
 		if (tags.length) headers.set('Cache-Tag', tags.join(','));
 
-		const [toClient, toCache] = r2Result.body.tee();
+		// Store R2 result in edge cache, then serve via cache.match for
+		// native range request handling (206 + Content-Range).
+		// Use the non-debug URL so non-debug requests benefit from edge cache.
+		const edgeCacheUrl = requestUrl.replace(/[&?]debug(&|$)/, '$1').replace(/[?&]$/, '');
+		const edgeCacheReq = new Request(edgeCacheUrl, { method: 'GET' });
+		await cache.put(edgeCacheReq, new Response(r2Result.body, { status: 200, headers: new Headers(headers) }));
+		rlog.info('R2 result cached in colo', { path });
 
-		// Store in caches.default for future same-colo edge cache hits
-		if (!skipCache) {
-			c.executionCtx.waitUntil(
-				cache.put(cacheReq, new Response(toCache, { status: 200, headers: new Headers(headers) }))
-					.then(() => rlog.info('R2 result cached in colo', { path }))
-					.catch((err) => rlog.error('R2 result cache.put failed', { error: err instanceof Error ? err.message : String(err) })),
-			);
-		} else {
-			toCache.cancel().catch(() => {});
-		}
+		// Serve via cache.match — handles Range headers natively
+		const cachedFromR2 = await cache.match(new Request(edgeCacheUrl, c.req.raw));
+		if (cachedFromR2) return cachedFromR2;
 
-		return new Response(toClient, { status: 200, headers });
+		// Fallback — shouldn't happen after successful put
+		rlog.warn('cache.match miss after R2 promotion', { path });
+		return new Response(null, { status: 200, headers });
 	}
 
 	// 4. Request coalescing — join in-flight transform if one exists
@@ -304,22 +312,20 @@ export async function transformHandler(c: HonoContext) {
 							rlog.info('R2 object too large for sync, firing async container', {
 								size: object.size, fetchableUrl, callbackUrl,
 							});
+							object.body.cancel().catch(() => {});
 							c.executionCtx.waitUntil(
 								transformViaContainerUrl(c.env.FFMPEG_CONTAINER, fetchableUrl, params, instanceKey, callbackUrl)
 									.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
 									.catch((err: unknown) => rlog.error('Async container failed', { error: err instanceof Error ? err.message : String(err) })),
 							);
-							// Return raw passthrough — next request will get cached transform
-							const passthroughObject = await bucket.get(resolved);
-							if (passthroughObject) {
-								transformed = new Response(passthroughObject.body, {
-									headers: {
-										'Content-Type': passthroughObject.httpMetadata?.contentType ?? 'video/mp4',
-										'X-Transform-Pending': 'true',
-									},
-								});
-							}
-							break;
+							// Don't serve raw file — return 202 so client knows to retry
+							return {
+								transformed: new Response(
+									JSON.stringify({ status: 'processing', message: 'Video is being transformed. Retry shortly.', path }),
+									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '30', 'X-Transform-Pending': 'true' } },
+								),
+								etag, version, sourceType,
+							};
 						}
 
 						// Large but fits in sync (100-256MB): wait for container
@@ -391,17 +397,14 @@ export async function transformHandler(c: HonoContext) {
 								.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
 								.catch((err: unknown) => rlog.error('Async container failed', { error: err instanceof Error ? err.message : String(err) })),
 						);
-						// Return immediate passthrough
-						const passthroughResp = await fetch(sourceUrl);
-						if (passthroughResp.ok) {
-							transformed = new Response(passthroughResp.body, {
-								headers: {
-									'Content-Type': passthroughResp.headers.get('Content-Type') ?? 'video/mp4',
-									'X-Transform-Pending': 'true',
-								},
-							});
-							break;
-						}
+						// Don't serve raw file — return 202 so client knows to retry
+						return {
+							transformed: new Response(
+								JSON.stringify({ status: 'processing', message: 'Video is being transformed. Retry shortly.', path }),
+								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '30', 'X-Transform-Pending': 'true' } },
+							),
+							etag, version, sourceType,
+						};
 					}
 
 					rlog.info('Source resolved (cdn-cgi)', { path: resolved, sourceUrl, sourceType, contentLength });
@@ -482,7 +485,7 @@ export async function transformHandler(c: HonoContext) {
 	})();
 
 	// Register for coalescing, clean up when done
-	const responsePromise = transformPromise.then(({ transformed, etag, version, sourceType }) => {
+	const responsePromise = transformPromise.then(async ({ transformed, etag, version, sourceType }) => {
 		const cacheKey = buildCacheKey(path, params, version, etag);
 		const durationMs = Math.round(performance.now() - startTime);
 
@@ -505,8 +508,14 @@ export async function transformHandler(c: HonoContext) {
 		if (params.derivative) headers.set('X-Derivative', params.derivative);
 		if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
 
+		// Determine cacheability early — used for both X-R2-Cache header and storage
+		const isPendingPassthrough = headers.get('X-Transform-Pending') === 'true';
+		const shouldCache = !skipCache && !isPendingPassthrough && transformed.status >= 200 && transformed.status < 400;
+
 		// Debug headers
 		headers.set('X-Cache-Key', cacheKey);
+		// X-R2-Cache: HIT = result is stored in R2 (serves from R2 on edge eviction)
+		headers.set('X-R2-Cache', shouldCache ? 'HIT' : 'MISS');
 		headers.set('X-Origin', originMatch.origin.name);
 		headers.set('X-Source-Type', sourceType);
 		headers.set('X-Transform-Source', sourceType === 'r2' ? 'binding' : 'cdn-cgi');
@@ -521,12 +530,14 @@ export async function transformHandler(c: HonoContext) {
 		if (params.muted !== undefined) headers.set('X-Playback-Muted', String(params.muted));
 		if (params.preload) headers.set('X-Playback-Preload', params.preload);
 
-		// Content-type correction for non-video modes
-		if (params.mode === 'audio') {
-			headers.set('Content-Type', 'audio/mp4');
-		} else if (params.mode === 'frame') {
-			const fmt = params.format === 'png' ? 'image/png' : 'image/jpeg';
-			headers.set('Content-Type', fmt);
+		// Content-type correction for non-video modes (skip for 202 pending responses)
+		if (!isPendingPassthrough) {
+			if (params.mode === 'audio') {
+				headers.set('Content-Type', 'audio/mp4');
+			} else if (params.mode === 'frame') {
+				const fmt = params.format === 'png' ? 'image/png' : 'image/jpeg';
+				headers.set('Content-Type', fmt);
+			}
 		}
 
 		// Cache-Tag for purge-by-tag
@@ -541,15 +552,10 @@ export async function transformHandler(c: HonoContext) {
 		headers.delete('Set-Cookie');
 		if (headers.get('Vary') === '*') headers.delete('Vary');
 
-		// 7. Tee body -> client + cache.put + R2 put
-		const body = transformed.body;
-		if (!body) {
-			return new Response(null, { status: transformed.status, headers });
-		}
-
-		const isPendingPassthrough = headers.get('X-Transform-Pending') === 'true';
-		const shouldCache = !skipCache && !isPendingPassthrough && transformed.status >= 200 && transformed.status < 400;
-
+		// 7. Store: transform → R2 → cache.put → serve via cache.match
+		//    This ensures range requests work on first request (cache.match
+		//    handles Range headers natively). R2 is the durable global store,
+		//    edge cache is the fast per-colo layer on top.
 		// Log to analytics (non-blocking)
 		if (c.env.ANALYTICS) {
 			logAnalyticsEvent(c.env.ANALYTICS, {
@@ -567,37 +573,49 @@ export async function transformHandler(c: HonoContext) {
 			}, c.executionCtx.waitUntil.bind(c.executionCtx));
 		}
 
-		if (shouldCache) {
-			// Three-way tee: client + edge cache + R2 persistent store
-			const [toClient, rest] = body.tee();
-			const [toEdgeCache, toR2] = rest.tee();
-
-			// Edge cache (per-colo, fast)
-			c.executionCtx.waitUntil(
-				cache
-					.put(cacheReq, new Response(toEdgeCache, { status: transformed.status, headers: new Headers(headers) }))
-					.then(() => log.info('cache.put resolved', { requestId, path }))
-					.catch((err) => log.error('cache.put FAILED', { requestId, path, error: err instanceof Error ? err.message : String(err) })),
-			);
-
-			// R2 persistent store (global, survives cache eviction + cross-colo)
+		if (shouldCache && transformed.body) {
+			// Flow: transform → R2 put → R2 get → cache.put → cache.match → serve
+			// Sequential streaming, zero memory buffering. R2 is the single source
+			// of truth, edge cache is a read-through layer for range request support.
 			const r2StoreKey = `_transformed/${cacheKey}`;
 			const ct = headers.get('Content-Type') ?? 'video/mp4';
-			c.executionCtx.waitUntil(
-				new Response(toR2).arrayBuffer()
-					.then((buf) => c.env.VIDEOS.put(r2StoreKey, buf, {
-						httpMetadata: { contentType: ct },
-						customMetadata: { transformSource: sourceType === 'r2' ? 'binding' : 'cdn-cgi', cacheKey },
-					}))
-					.then(() => log.info('R2 transform stored', { requestId, path, r2Key: r2StoreKey }))
-					.catch((err) => log.error('R2 transform store FAILED', { requestId, path, error: err instanceof Error ? err.message : String(err) })),
-			);
+			const contentLength = transformed.headers.get('Content-Length');
 
-			return new Response(toClient, { status: transformed.status, headers });
+			// 1. Stream transform output directly to R2
+			if (contentLength) {
+				const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));
+				transformed.body.pipeTo(fixedStream.writable);
+				await c.env.VIDEOS.put(r2StoreKey, fixedStream.readable, {
+					httpMetadata: { contentType: ct },
+					customMetadata: { transformSource: sourceType === 'r2' ? 'binding' : 'cdn-cgi', cacheKey },
+				});
+			} else {
+				// No Content-Length — can't stream to R2, skip persistent store
+				rlog.warn('No Content-Length, skipping R2 store', { path });
+				await cache.put(cacheReq, new Response(transformed.body, { status: 200, headers: new Headers(headers) }));
+				const cached = await cache.match(cacheReq);
+				if (cached) return cached;
+				return new Response(null, { status: 200, headers });
+			}
+			rlog.info('R2 transform stored', { path, r2Key: r2StoreKey, size: contentLength });
+
+			// 2. Read back from R2 → stream to edge cache
+			const r2Obj = await c.env.VIDEOS.get(r2StoreKey);
+			if (r2Obj) {
+				headers.set('Content-Length', String(r2Obj.size));
+				await cache.put(cacheReq, new Response(r2Obj.body, { status: 200, headers: new Headers(headers) }));
+				rlog.info('cache.put from R2', { path });
+			}
+
+			// 3. Serve via cache.match — handles Range headers natively
+			const cached = await cache.match(cacheReq);
+			if (cached) return cached;
+
+			rlog.warn('cache.match miss after put', { path });
+			return new Response(null, { status: 200, headers });
 		} else {
-			const [toClient, unused] = body.tee();
-			unused.cancel().catch(() => {});
-			return new Response(toClient, { status: transformed.status, headers });
+			// Not cacheable (debug or passthrough) — serve directly
+			return new Response(transformed.body, { status: transformed.status, headers });
 		}
 	});
 
