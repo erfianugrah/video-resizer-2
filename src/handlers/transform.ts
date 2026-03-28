@@ -27,6 +27,15 @@ type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
 /** Single-flight dedup: max 500 concurrent transforms, 5-min TTL. */
 const coalescer = new RequestCoalescer({ maxSize: 500, ttlMs: 300_000 });
 
+/**
+ * Downgrade HTTPS URL to HTTP for container outbound interception.
+ * Containers can only intercept HTTP traffic — the Worker's outbound
+ * handler proxies via fetch() which upgrades to TLS automatically.
+ */
+function toContainerUrl(url: string): string {
+	return url.replace(/^https:\/\//, 'http://');
+}
+
 export async function transformHandler(c: HonoContext) {
 	const config = c.get('config');
 	const url = new URL(c.req.url);
@@ -225,14 +234,16 @@ export async function transformHandler(c: HonoContext) {
 
 						if (object.size > 256 * 1024 * 1024) {
 							// Very large (>256MB): use URL-based async container
-							const callbackUrl = `https://${zoneHost}/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(buildCacheKey(path, params, undefined, etag))}&requestUrl=${encodeURIComponent(requestUrl)}`;
+							// Use http:// — container outbound handler only intercepts HTTP (not HTTPS).
+							// The Worker's outbound handler proxies this via fetch() which handles TLS.
+							const callbackUrl = `http://${zoneHost}/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(buildCacheKey(path, params, undefined, etag))}&requestUrl=${encodeURIComponent(requestUrl)}`;
 							// Find a fetchable URL for the source:
 							// 1. Prefer remote/fallback source URL if configured
 							// 2. Fall back to /internal/r2-source endpoint (avoids transform loop)
 							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
 							const fetchableUrl = remoteSource && 'url' in remoteSource
-								? remoteSource.url.replace(/\/+$/, '') + path
-								: `https://${zoneHost}/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`;
+								? toContainerUrl(remoteSource.url.replace(/\/+$/, '') + path)
+								: `http://${zoneHost}/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`;
 							rlog.info('R2 object too large for sync, using URL-based async container', {
 								size: object.size, fetchableUrl, callbackUrl,
 							});
@@ -315,13 +326,14 @@ export async function transformHandler(c: HonoContext) {
 					if (contentLength > CDN_CGI_SIZE_LIMIT && c.env.FFMPEG_CONTAINER) {
 						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
 
-						const callbackUrl = `https://${zoneHost}/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(buildCacheKey(path, params, version))}&requestUrl=${encodeURIComponent(requestUrl)}`;
+						// Use http:// — container outbound handler only intercepts HTTP (not HTTPS).
+						const callbackUrl = `http://${zoneHost}/internal/container-result?path=${encodeURIComponent(path)}&cacheKey=${encodeURIComponent(buildCacheKey(path, params, version))}&requestUrl=${encodeURIComponent(requestUrl)}`;
 						rlog.info('Remote source exceeds cdn-cgi limit, routing to URL-based async container', {
 							size: contentLength, limit: CDN_CGI_SIZE_LIMIT, sourceUrl, callbackUrl,
 						});
 
 						c.executionCtx.waitUntil(
-							transformViaContainerUrl(c.env.FFMPEG_CONTAINER, sourceUrl, params, instanceKey, callbackUrl)
+							transformViaContainerUrl(c.env.FFMPEG_CONTAINER, toContainerUrl(sourceUrl), params, instanceKey, callbackUrl)
 								.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
 								.catch((err: unknown) => rlog.error('Async container failed', { error: err instanceof Error ? err.message : String(err) })),
 						);

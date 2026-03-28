@@ -19,7 +19,7 @@ import { postContainerResult, getR2Source } from './handlers/internal';
 import { transformHandler } from './handlers/transform';
 
 // Durable Object + analytics cleanup
-import { FFmpegContainer } from './transform/container';
+import { FFmpegContainer, ContainerProxy } from './transform/container';
 import { CLEANUP_SQL } from './analytics/middleware';
 import * as log from './log';
 
@@ -57,7 +57,7 @@ app.get('*', transformHandler);
 
 // ── Export ────────────────────────────────────────────────────────────────
 
-export { FFmpegContainer };
+export { FFmpegContainer, ContainerProxy };
 
 export default {
 	fetch: app.fetch,

@@ -9,7 +9,9 @@
 		"start": "wrangler dev",
 		"test": "vitest",
 		"test:run": "vitest run",
-		"test:e2e": "vitest run --config vitest.e2e.config.ts"
+		"test:e2e": "vitest run --config vitest.e2e.config.ts",
+		"test:smoke": "npx tsx scripts/smoke.ts",
+		"test:smoke:container": "npx tsx scripts/smoke.ts --container"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.12.4",

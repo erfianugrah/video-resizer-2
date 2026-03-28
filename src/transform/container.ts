@@ -10,18 +10,39 @@
  * The container runs ffmpeg and exposes HTTP endpoints:
  *   POST /transform       — sync: send source, receive output
  *   POST /transform-async — async: send source + callbackUrl, 202 response
+ *   POST /transform-url   — async: container fetches source by URL
  *   GET  /health          — health check
  *
  * The Worker routes to the container via Durable Object binding.
+ *
+ * IMPORTANT: Containers can only intercept HTTP traffic (not HTTPS).
+ * All outbound HTTP from the container is proxied through the `outbound`
+ * handler below, which calls `fetch(request)` in the Worker runtime —
+ * giving the container full internet access for source downloads and
+ * callback POSTs. The container server.mjs must use http:// URLs.
  */
-import { Container } from '@cloudflare/containers';
+import { Container, ContainerProxy } from '@cloudflare/containers';
 import type { TransformParams } from '../params/schema';
 import { AppError } from '../errors';
 import * as log from '../log';
 
+// ContainerProxy must be exported from the Worker entry point for outbound
+// handlers to work. Re-exported here; index.ts re-exports it.
+export { ContainerProxy };
+
 /**
  * FFmpegContainer — extends the CF Container class.
  * Exported so it can be registered as a Durable Object in wrangler.jsonc.
+ *
+ * The static `outbound` handler intercepts ALL outbound HTTP requests from
+ * the container and proxies them through the Worker runtime. This is needed
+ * because:
+ *   1. The container's callback POST to /internal/container-result must
+ *      reach our Worker, not the public internet.
+ *   2. The container's source fetch (e.g. from videos.erfi.dev) needs
+ *      internet access, which only the Worker runtime provides.
+ *   3. Containers only intercept HTTP, not HTTPS — but the Worker's
+ *      fetch() handles TLS automatically.
  */
 export class FFmpegContainer extends Container {
 	defaultPort = 8080;
@@ -41,6 +62,23 @@ export class FFmpegContainer extends Container {
 		});
 	}
 }
+
+/**
+ * Outbound handler: intercepts all HTTP requests from the container.
+ *
+ * The container makes http:// requests (because HTTPS interception isn't
+ * supported yet). The Worker's fetch() upgrades to HTTPS automatically.
+ * This gives the container:
+ *   - Access to our own Worker endpoints (callback, R2 source)
+ *   - Access to external sources (videos.erfi.dev, S3, etc.)
+ */
+(FFmpegContainer as any).outbound = async (request: Request, env: any, ctx: any) => {
+	log.info('Container outbound', {
+		method: request.method,
+		url: request.url,
+	});
+	return fetch(request);
+};
 
 /**
  * Transform via FFmpeg container (synchronous path).
