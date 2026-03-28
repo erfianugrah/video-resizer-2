@@ -20,6 +20,10 @@ export interface Env {
 
 	// Container (optional)
 	FFMPEG_CONTAINER?: DurableObjectNamespace;
+
+	// Queue-based container transforms (optional)
+	TRANSFORM_QUEUE?: Queue;
+	TRANSFORM_JOB?: DurableObjectNamespace;
 }
 
 /** Hono context variables set by middleware. */

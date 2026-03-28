@@ -12,7 +12,7 @@
  *   GET  /health            — health check
  */
 import { createServer } from 'node:http';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { writeFile, readFile, unlink, mkdir, stat } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
@@ -254,11 +254,39 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 		vf.push(`crop=${params.crop}`);
 	}
 
+	// Mode-specific (checked before generic -vf push to build combined filter chains)
+	if (params.mode === 'spritesheet') {
+		// Extract N frames and tile them into a single image.
+		// imageCount defaults to 20 if not specified. Layout: ceil(sqrt(N)) columns.
+		const count = params.imageCount || 20;
+		const cols = Math.ceil(Math.sqrt(count));
+		const rows = Math.ceil(count / cols);
+
+		// Calculate fps to evenly sample `count` frames across the video duration.
+		// If duration is specified, use it. Otherwise use select filter with scene detection
+		// fallback to fps=1 (1 frame/sec) and let -frames:v limit the output.
+		const dur = params.duration ? parseDuration(String(params.duration)) : null;
+		if (dur && dur > 0) {
+			// Evenly distributed: e.g., 20 frames over 60s = fps=0.333
+			const spriteFps = (count / dur).toFixed(4);
+			vf.push(`fps=${spriteFps}`, `tile=${cols}x${rows}`);
+		} else {
+			// No duration known — use select filter to pick N evenly spaced frames.
+			// fps=1 samples 1/sec; tile fills the grid; -frames:v limits output.
+			vf.push('fps=1', `tile=${cols}x${rows}`);
+		}
+		args.push('-vf', vf.join(','));
+		args.push('-frames:v', '1');
+		args.push('-f', 'image2', '-c:v', 'mjpeg', '-q:v', '3');
+		const jpgOutput = outputPath.replace(/\.mp4$/, '.jpg');
+		args.push(jpgOutput);
+		return args;
+	}
+
 	if (vf.length > 0) {
 		args.push('-vf', vf.join(','));
 	}
 
-	// Mode-specific
 	if (params.mode === 'frame') {
 		args.push('-frames:v', '1');
 		if (params.format === 'png') {
@@ -354,6 +382,7 @@ async function handleTransformUrl(req, res) {
 	const paramsJson = req.headers['x-transform-params'];
 	const sourceUrl = req.headers['x-source-url'];
 	const callbackUrl = req.headers['x-callback-url'];
+	const jobId = req.headers['x-job-id'] || null;
 
 	if (!paramsJson || !sourceUrl) {
 		res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -370,7 +399,7 @@ async function handleTransformUrl(req, res) {
 		res.writeHead(202, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ id, status: 'processing' }));
 
-		processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputPath, callbackUrl);
+		processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputPath, callbackUrl, jobId);
 		return;
 	}
 
@@ -412,12 +441,25 @@ async function handleTransformUrl(req, res) {
 }
 
 /**
+ * Report progress to the Worker's outbound handler, which forwards to TransformJobDO.
+ * Fire-and-forget — errors are silently ignored.
+ */
+function reportProgress(callbackUrl, jobId, phase, percent) {
+	if (!jobId) return;
+	// Extract the host from callback URL to build progress URL
+	const url = new URL(callbackUrl);
+	const progressUrl = `${url.protocol}//${url.host}/internal/job-progress?jobId=${encodeURIComponent(jobId)}&phase=${encodeURIComponent(phase)}&percent=${percent}`;
+	fetch(progressUrl).catch(() => {});
+}
+
+/**
  * Background processing for URL-based async transforms.
  */
-async function processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputPath, callbackUrl) {
+async function processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputPath, callbackUrl, jobId) {
 	try {
 		const params = JSON.parse(paramsJson);
 
+		reportProgress(callbackUrl, jobId, 'downloading', 0);
 		console.log(`[${id}] Async: fetching source from ${sourceUrl}`);
 		const resp = await fetch(sourceUrl);
 		console.log(`[${id}] Async: source response: status=${resp.status} content-type=${resp.headers.get('content-type')} content-length=${resp.headers.get('content-length')}`);
@@ -428,14 +470,16 @@ async function processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputP
 		const inputStat = await stat(inputPath);
 		console.log(`[${id}] Async: source streamed to disk: ${inputStat.size} bytes`);
 
+		reportProgress(callbackUrl, jobId, 'transcoding', 10);
 		const args = buildFfmpegArgs(inputPath, outputPath, params);
 		console.log(`[${id}] Async: ffmpeg ${args.join(' ')}`);
-		await runFfmpeg(args);
+		await runFfmpegWithProgress(args, callbackUrl, jobId, params);
 
 		const actualOutput = findOutputFile(outputPath, params);
 		const outputStat = await stat(actualOutput);
 		const contentType = getContentType(params);
 
+		reportProgress(callbackUrl, jobId, 'uploading', 90);
 		console.log(`[${id}] Async: transform complete, ${outputStat.size} bytes, posting to callback`);
 		const { createReadStream } = await import('node:fs');
 		const outputStream = Readable.toWeb(createReadStream(actualOutput));
@@ -472,9 +516,67 @@ async function processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputP
 	}
 }
 
+/**
+ * Run ffmpeg with progress reporting via stderr parsing.
+ * Falls back to regular runFfmpeg if progress parsing fails.
+ */
+function runFfmpegWithProgress(args, callbackUrl, jobId, params) {
+	if (!jobId) return runFfmpeg(args);
+
+	return new Promise((resolve, reject) => {
+		const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+		let stderr = '';
+		let lastReportedPercent = 10;
+
+		// Try to extract total duration from input (probe first few seconds of stderr)
+		let totalDuration = null;
+		if (params.duration) {
+			totalDuration = parseDuration(String(params.duration));
+		}
+
+		proc.stderr.on('data', (chunk) => {
+			const line = chunk.toString();
+			stderr += line;
+
+			// Parse total duration from "Duration: HH:MM:SS.mm" line
+			if (!totalDuration) {
+				const durMatch = line.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+				if (durMatch) {
+					totalDuration = parseInt(durMatch[1]) * 3600 + parseInt(durMatch[2]) * 60 + parseFloat(durMatch[3]);
+				}
+			}
+
+			// Parse progress from "time=HH:MM:SS.mm" output
+			const timeMatch = line.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+			if (timeMatch && totalDuration && totalDuration > 0) {
+				const currentSec = parseInt(timeMatch[1]) * 3600 + parseInt(timeMatch[2]) * 60 + parseFloat(timeMatch[3]);
+				// Scale progress to 10-85 range (10=start, 85=done, 90=uploading)
+				const percent = Math.min(85, Math.round(10 + (currentSec / totalDuration) * 75));
+				if (percent > lastReportedPercent + 4) {
+					lastReportedPercent = percent;
+					reportProgress(callbackUrl, jobId, 'transcoding', percent);
+				}
+			}
+		});
+
+		proc.on('close', (code) => {
+			if (code !== 0) {
+				const stderrTail = stderr.slice(-2000);
+				reject(new Error(`ffmpeg failed (exit ${code}): ${stderrTail}`));
+			} else {
+				resolve({ stdout: '', stderr });
+			}
+		});
+
+		proc.on('error', reject);
+	});
+}
+
 function getContentType(params) {
 	if (params.mode === 'audio') return 'audio/mp4';
 	if (params.mode === 'frame') return params.format === 'png' ? 'image/png' : 'image/jpeg';
+	if (params.mode === 'spritesheet') return 'image/jpeg';
+	if (params.format === 'vp9') return 'video/webm';
 	return 'video/mp4';
 }
 
@@ -509,6 +611,7 @@ function findOutputFile(basePath, params) {
 			? basePath.replace(/\.mp4$/, '.png')
 			: basePath.replace(/\.mp4$/, '.jpg');
 	}
+	if (params.mode === 'spritesheet') return basePath.replace(/\.mp4$/, '.jpg');
 	if (params.mode === 'audio') return basePath.replace(/\.mp4$/, '.m4a');
 	if (params.format === 'vp9') return basePath.replace(/\.mp4$/, '.webm');
 	return basePath;

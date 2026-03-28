@@ -20,7 +20,7 @@ export async function cdnCgiPassthrough(c: Context<{ Bindings: Env; Variables: V
 
 export async function nonVideoPassthrough(c: Context<{ Bindings: Env; Variables: Variables }>, next: Next) {
 	const pathname = new URL(c.req.url).pathname;
-	if (pathname.startsWith('/admin/') || pathname.startsWith('/internal/')) {
+	if (pathname.startsWith('/admin/') || pathname.startsWith('/internal/') || pathname.startsWith('/ws/')) {
 		await next();
 		return;
 	}

@@ -449,7 +449,7 @@ dashboard/
   src/components/Dashboard.tsx # Analytics + Debug tabs (React)
   src/pages/index.astro       # Dashboard page entry
 scripts/
-  smoke.ts                    # Standalone smoke test (56 checks, tail capture)
+  smoke.ts                    # Standalone smoke test (64+ checks, tail capture)
 ```
 
 ### Design principles
@@ -885,7 +885,7 @@ Debug headers on every response:
 | `npm run dev`        | Local dev (`wrangler dev`)                     |
 | `npm run deploy`     | Deploy to Cloudflare                           |
 | `npm test`           | Vitest (watch mode)                            |
-| `npm run test:run`   | Vitest single run (142 unit tests)             |
+| `npm run test:run`   | Vitest single run (180 unit tests)             |
 | `npm run test:e2e`   | E2E tests against live `videos.erfi.io` (46)   |
 | `npm run check`      | TypeScript type check                          |
 | `npx wrangler types` | Regen types after binding changes              |
@@ -920,7 +920,7 @@ Production: `hono`, `zod` (v4), `aws4fetch`, `@cloudflare/containers`. Four deps
 		{ "binding": "ANALYTICS", "database_name": "video-resizer-analytics", "database_id": "69625b4d-21b1-40f0-a370-be81c12c5fb5" },
 	],
 	"containers": [
-		{ "class_name": "FFmpegContainer", "image": "./container/Dockerfile", "max_instances": 5, "instance_type": "standard-1" },
+		{ "class_name": "FFmpegContainer", "image": "./container/Dockerfile", "max_instances": 5, "instance_type": { "vcpu": 4, "memory_mib": 12288, "disk_mb": 20000 } },
 	],
 	"durable_objects": {
 		"bindings": [{ "name": "FFMPEG_CONTAINER", "class_name": "FFmpegContainer" }],
@@ -1004,8 +1004,8 @@ curl -s -H "Authorization: Bearer $TOKEN" "https://videos.erfi.io/admin/analytic
 npx wrangler tail --format json
 
 # Run tests
-npm run test:run    # 142 unit tests
-npm run test:e2e    # 46 E2E tests (live HTTP)
+npm run test:run    # 180 unit tests
+npm run test:e2e    # 74 E2E tests (live HTTP)
 
 # Deploy
 npx wrangler deploy
@@ -1018,7 +1018,7 @@ rclone ls erfi:videos/
 
 ## Implementation progress
 
-### Completed (142 unit tests + 46 E2E tests, all passing)
+### Completed (180 unit tests + 74 E2E tests, all passing)
 
 **Core pipeline:**
 - [x] `src/index.ts` — Hono app, full middleware pipeline, three-tier transform routing
@@ -1069,7 +1069,7 @@ rclone ls erfi:videos/
 
 **Tests:**
 - [x] `test/` — 11 unit test files, 142 tests (Vitest + Workers pool)
-- [x] `test/e2e/live.spec.ts` — 46 E2E tests (Vitest + Node, live HTTP to videos.erfi.io)
+- [x] `test/e2e/live.spec.ts` — 74 E2E tests (Vitest + Node, live HTTP to videos.erfi.io)
 - [x] `vitest.config.ts` — Workers pool config (excludes E2E)
 - [x] `vitest.e2e.config.ts` — Node config for E2E (60s timeout)
 
@@ -1105,7 +1105,69 @@ rclone ls erfi:videos/
 
 ### Remaining
 
-- All v1 features implemented. No remaining items.
+- Phase 4 queue features: job cancellation, priority queues, rate limiting, cost tracking.
+
+### Queue-based container architecture (2026-03-28)
+
+- [x] **Cloudflare Queues** — `video-transform-jobs` queue + `video-transform-dlq` dead letter.
+      Producer: transform handler enqueues on oversized/container-only paths.
+      Consumer: stateless retry-until-done pattern (check R2 → dispatch → retry 120s).
+- [x] **TransformJobDO** — Durable Object with WebSocket Hibernation API for real-time
+      progress. Default status `'none'` (not `'pending'`) to avoid false dedup.
+- [x] **D1 job registry** — `transform_jobs` table for dashboard discovery.
+      Updated on enqueue, edge cache HIT, R2 HIT, and container callback completion.
+- [x] **Dashboard Jobs tab** — auto-fetches `GET /admin/jobs` every 10s, WebSocket per
+      active job (ref-based, no connection storm), active cards + recent table + filter.
+- [x] **Container ffmpeg progress** — `runFfmpegWithProgress()` parses stderr
+      `time=HH:MM:SS` lines, reports via `/internal/job-progress` → TransformJobDO → broadcast.
+- [x] **Source dedup** — outbound handler caches remote source downloads in R2
+      (`_source-cache/`). Concurrent containers for the same 725MB file share one download.
+- [x] **`/ws/` passthrough exemption** — WebSocket URLs with encoded `.mov` in job ID
+      were caught by non-video passthrough middleware.
+- [x] **WebSocket close code 1006** — reserved code can't be sent explicitly; safe fallback.
+- [x] **Spritesheet via ffmpeg** — `fps=1,tile=COLSxROWS` filter, output as JPEG.
+      `imageCount` defaults to 20, grid layout via `ceil(sqrt(N))` columns.
+
+### Queue design decisions and lessons learned
+
+**Stateless consumer pattern.** The queue consumer does NOT track job state. It checks
+R2 for the result → ack if found, dispatch to container + retry in 120s if not. This
+is idempotent and survives deploys. The original approach (check TransformJobDO status
+for dedup) caused a critical bug: new DOs defaulted to `status: 'pending'` which the
+dedup logic treated as "already in progress," preventing any job from being enqueued.
+
+**DO default state must be distinguishable from submitted.** TransformJobDO defaults to
+`status: 'none'` — never `'pending'`. Any status that overlaps with a valid job state
+creates false-positive dedup.
+
+**Don't ack on 202.** The container returning 202 means "accepted," not "done." The
+actual work (download + ffmpeg + R2 put) takes 2-5 minutes. Acking on 202 means the
+message is lost if the container dies (deploy, crash, OOM). Instead: retry with delay
+and check R2 on each retry.
+
+**`require()` in ESM crashes silently in containers.** `server.mjs` is an ES module.
+Using `require('node:child_process')` inside a function (added for `spawn` in
+`runFfmpegWithProgress`) fails with `"require is not defined"` at runtime. All imports
+must be ESM `import` at the top of the file.
+
+**Edge cache hides D1 status updates.** Transform results are served from edge cache
+(`caches.default`) which bypasses the Worker entirely on HIT. D1 job status only
+updates when the Worker runs (R2 path or `?debug` bypass). Fixed by adding D1 update
+in the edge cache HIT path too.
+
+**WebSocket connection storms.** The dashboard's `fetchJobs` callback was in a
+`useEffect` dependency array alongside WebSocket state. Each new connection triggered
+a state update → re-render → new `fetchJobs` → new connections. Fixed by storing
+connections in `useRef` (not `useState`) and managing connections in a separate
+`useEffect` keyed only on the jobs array.
+
+**Source dedup via R2.** The outbound handler caches remote source downloads in R2
+(`_source-cache/{path}`). Uses `body.tee()` to stream to both the container and R2.
+Second container requesting the same 725MB file gets it from R2. Without this,
+3 concurrent transforms each download 725MB independently.
+
+**`max_batch_timeout: 0` may break consumer delivery.** During debugging, removing this
+setting (or using `5`) appeared to help. The exact behavior is undocumented for value 0.
 
 ### Fixed (previously remaining)
 
@@ -1126,8 +1188,8 @@ rclone ls erfi:videos/
 - [x] **Container DO instance key collision** — each unique (origin, path, params)
       combination now gets its own DO instance via `buildContainerInstanceKey()` which
       hashes transform-affecting params with FNV-1a. 9 unit tests verify correctness.
-- [x] **Extract index.ts** — 777 lines split into 5 middleware files + 3 handler files.
-      `index.ts` is now 70 lines of wiring only. 151 unit tests passing.
+- [x] **Extract index.ts** — split into 5 middleware files + 5 handler files
+      (admin, transform, jobs, dashboard, internal). `index.ts` is ~90 lines of wiring.
 - [x] **Container outbound handler** — containers only intercept HTTP, not HTTPS.
       Outbound handler intercepts callback POSTs + R2 source requests via path matching.
       Source downloads use HTTPS directly (enableInternet=true). No hardcoded domains.

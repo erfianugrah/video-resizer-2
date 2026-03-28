@@ -25,8 +25,9 @@ test.describe('Dashboard login', () => {
 		// Should redirect to dashboard — look for the app header
 		await page.waitForURL('**/admin/dashboard');
 		await expect(page.locator('h1')).toHaveText('video-resizer-2');
-		// Should have analytics and debug tabs
+		// Should have analytics, jobs, and debug tabs
 		await expect(page.getByRole('button', { name: 'analytics' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'jobs' })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'debug' })).toBeVisible();
 	});
 
@@ -94,6 +95,49 @@ test.describe('Analytics tab', () => {
 		await page.click('button:has-text("Refresh")');
 		// Should still show stat cards (maybe with different numbers)
 		await expect(page.getByText('Total Requests')).toBeVisible({ timeout: 10_000 });
+	});
+});
+
+test.describe('Jobs tab', () => {
+	test.beforeEach(async ({ page }) => {
+		await page.goto('/admin/dashboard');
+		await page.fill('input[type="password"]', TOKEN);
+		await page.click('button[type="submit"]');
+		await page.waitForURL('**/admin/dashboard');
+		await page.evaluate((t) => localStorage.setItem('vr2-token', t), TOKEN);
+		await page.reload();
+		await expect(page.getByRole('button', { name: 'jobs' })).toBeVisible({ timeout: 5_000 });
+		await page.click('button:has-text("jobs")');
+	});
+
+	test('shows empty state with instructions', async ({ page }) => {
+		await expect(page.getByText('No jobs being tracked')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText('jobId')).toBeVisible();
+	});
+
+	test('shows job ID input and track button', async ({ page }) => {
+		const input = page.locator('input[placeholder*="Job ID"]');
+		await expect(input).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByRole('button', { name: 'Track' })).toBeVisible();
+	});
+
+	test('tracking a job shows job card with status', async ({ page }) => {
+		const input = page.locator('input[placeholder*="Job ID"]');
+		await input.fill('test-nonexistent-job');
+		await page.click('button:has-text("Track")');
+		// Should show a job card (even for nonexistent job — DO auto-creates)
+		await expect(page.getByText('pending').first()).toBeVisible({ timeout: 10_000 });
+		// Should have remove button
+		await expect(page.getByRole('button', { name: 'Remove' })).toBeVisible();
+	});
+
+	test('remove button removes tracked job', async ({ page }) => {
+		const input = page.locator('input[placeholder*="Job ID"]');
+		await input.fill('test-removable-job');
+		await page.click('button:has-text("Track")');
+		await expect(page.getByRole('button', { name: 'Remove' })).toBeVisible({ timeout: 10_000 });
+		await page.click('button:has-text("Remove")');
+		await expect(page.getByText('No jobs being tracked')).toBeVisible({ timeout: 5_000 });
 	});
 });
 

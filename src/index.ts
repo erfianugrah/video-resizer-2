@@ -17,11 +17,15 @@ import { cdnCgiPassthrough, nonVideoPassthrough } from './middleware/passthrough
 import { getConfig, postConfig, postCacheBust, getAnalytics, getAnalyticsErrors } from './handlers/admin';
 import { postContainerResult, getR2Source } from './handlers/internal';
 import { transformHandler } from './handlers/transform';
+import { wsJobHandler, listJobsHandler, getJobStatus } from './handlers/jobs';
 
 // Durable Object + analytics cleanup
 import { FFmpegContainer, ContainerProxy } from './transform/container';
+import { TransformJobDO } from './transform/job';
+import { handleQueue } from './queue/consumer';
 import { CLEANUP_SQL } from './analytics/middleware';
 import * as log from './log';
+import type { JobMessage } from './transform/job';
 
 // ── App ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +50,12 @@ app.post('/admin/cache/bust', postCacheBust);
 app.get('/admin/analytics', getAnalytics);
 app.get('/admin/analytics/errors', getAnalyticsErrors);
 
+// ── Job management routes ────────────────────────────────────────────────
+
+app.get('/ws/job/:id', wsJobHandler);
+app.get('/admin/jobs', listJobsHandler);
+app.get('/admin/jobs/:id', getJobStatus);
+
 // ── Dashboard (static assets, auth-gated) ────────────────────────────────
 
 import { dashboardAuth, dashboardLogin } from './handlers/dashboard';
@@ -65,10 +75,15 @@ app.get('*', transformHandler);
 
 // ── Export ────────────────────────────────────────────────────────────────
 
-export { FFmpegContainer, ContainerProxy };
+export { FFmpegContainer, ContainerProxy, TransformJobDO };
 
 export default {
-	fetch: app.fetch,
+	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+		return app.fetch(request, env, ctx);
+	},
+	async queue(batch: MessageBatch<JobMessage>, env: Env, ctx: ExecutionContext) {
+		await handleQueue(batch, env);
+	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
 		if (controller.cron === '0 0 * * sun' && env.ANALYTICS) {
 			await env.ANALYTICS.exec(CLEANUP_SQL);

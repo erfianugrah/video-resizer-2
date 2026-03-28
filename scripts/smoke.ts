@@ -612,6 +612,49 @@ test('container: range request on R2-cached result', async () => {
 	}
 });
 
+// ── Queue / Job endpoints ────────────────────────────────────────────────
+
+test('job: GET /admin/jobs/:id without auth returns 401', async () => {
+	const r = await GET('/admin/jobs/nonexistent-job-id');
+	assertEq(r.status, 401, 'status');
+});
+
+test('job: GET /admin/jobs/:id with auth returns job state', async () => {
+	const r = await GET('/admin/jobs/nonexistent-job-id', {
+		headers: { Authorization: `Bearer ${process.env.CONFIG_API_TOKEN ?? 'test-analytics-token-2026'}` },
+	});
+	assertEq(r.status, 200, 'status');
+	const body = await r.json() as any;
+	assert(!!body.job, 'has job field');
+	assert(typeof body.job.status === 'string', 'has status string');
+	assert(typeof body.job.progress === 'number', 'has progress number');
+});
+
+test('job: GET /ws/job/:id without Upgrade returns 426', async () => {
+	const r = await GET('/ws/job/test-job-id');
+	assertEq(r.status, 426, 'status');
+});
+
+test('job: 202 from oversized source includes job metadata', async () => {
+	const r = await GET(`${HUGE}?imwidth=315`, { timeout: 600_000 });
+	if (r.status === 202) {
+		const body = await r.json() as any;
+		assert(!!body.status, 'has status');
+		assert(!!body.path, 'has path');
+		assert(!!body.message, 'has message');
+		// jobId present when queue configured
+		if (body.jobId) {
+			assert(typeof body.jobId === 'string', 'jobId is string');
+			assertGt(body.jobId.length, 0, 'jobId not empty');
+		}
+		if (body.ws) {
+			assertContains(body.ws, 'wss://', 'ws protocol');
+			assertContains(body.ws, '/ws/job/', 'ws path');
+		}
+	}
+	// 200 = cached from prior run, also ok
+});
+
 // Container async (725MB) — only with --container flag
 if (includeContainer) {
 	test('container: first request returns 202 or cached result', async () => {

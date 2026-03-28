@@ -34,10 +34,31 @@
 			"instance_type": { "vcpu": 4, "memory_mib": 12288, "disk_mb": 20000 },
 		},
 	],
-	"durable_objects": {
-		"bindings": [{ "name": "FFMPEG_CONTAINER", "class_name": "FFmpegContainer" }],
+	"queues": {
+		"producers": [
+			{ "binding": "TRANSFORM_QUEUE", "queue": "video-transform-jobs" },
+		],
+		"consumers": [
+			{
+				"queue": "video-transform-jobs",
+				"max_batch_size": 1,
+				"max_retries": 10,
+				"max_batch_timeout": 5,
+				"max_concurrency": 2,
+				"dead_letter_queue": "video-transform-dlq",
+			},
+		],
 	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["FFmpegContainer"] }],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "FFMPEG_CONTAINER", "class_name": "FFmpegContainer" },
+			{ "name": "TRANSFORM_JOB", "class_name": "TransformJobDO" },
+		],
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["FFmpegContainer"] },
+		{ "tag": "v2", "new_sqlite_classes": ["TransformJobDO"] },
+	],
 	"routes": [
 		{
 			"pattern": "videos.erfi.io",

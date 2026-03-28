@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
-type Tab = 'analytics' | 'debug';
+type Tab = 'analytics' | 'jobs' | 'debug';
 
 interface AnalyticsSummary {
 	total: number;
@@ -77,7 +77,7 @@ export default function Dashboard() {
 			</header>
 
 			<nav className="flex gap-1 mb-6 border-b" style={{ borderColor: 'var(--border)' }}>
-				{(['analytics', 'debug'] as Tab[]).map((t) => (
+				{(['analytics', 'jobs', 'debug'] as Tab[]).map((t) => (
 					<button
 						key={t}
 						onClick={() => setTab(t)}
@@ -93,6 +93,7 @@ export default function Dashboard() {
 			</nav>
 
 			{tab === 'analytics' && <AnalyticsTab token={token} />}
+			{tab === 'jobs' && <JobsTab token={token} />}
 			{tab === 'debug' && <DebugTab />}
 		</div>
 	);
@@ -376,6 +377,275 @@ function DebugTab() {
 							</dl>
 						</div>
 					)}
+				</div>
+			)}
+		</div>
+	);
+}
+
+// ── Jobs Tab ─────────────────────────────────────────────────────────────
+
+interface JobRow {
+	job_id: string;
+	path: string;
+	origin: string | null;
+	status: string;
+	params: Record<string, unknown> | null;
+	source_type: string | null;
+	created_at: number;
+	started_at: number | null;
+	completed_at: number | null;
+	error: string | null;
+	output_size: number | null;
+}
+
+function JobsTab({ token }: { token: string }) {
+	const [jobs, setJobs] = useState<JobRow[]>([]);
+	const [filter, setFilter] = useState('');
+	const [hours, setHours] = useState(24);
+	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState('');
+
+	// WebSocket connections stored in ref (not state — avoids re-render loops)
+	const wsRef = useRef<Map<string, WebSocket>>(new Map());
+	const [liveJobIds, setLiveJobIds] = useState<Set<string>>(new Set());
+
+	const fetchJobs = useCallback(async () => {
+		if (!token) { setError('Enter API token above'); return; }
+		setLoading(true);
+		setError('');
+		try {
+			const params = new URLSearchParams({ hours: String(hours), limit: '100' });
+			if (filter) params.set('filter', filter);
+			const resp = await fetch(`${BASE}/admin/jobs?${params}`, {
+				headers: { Authorization: `Bearer ${token}` },
+			});
+			if (resp.status === 401) { setError('Invalid token'); return; }
+			if (!resp.ok) { setError(`HTTP ${resp.status}`); return; }
+			const data = await resp.json() as { jobs: JobRow[] };
+			setJobs(data.jobs ?? []);
+		} catch (e) {
+			setError(e instanceof Error ? e.message : 'Fetch failed');
+		} finally {
+			setLoading(false);
+		}
+	}, [token, hours, filter]);
+
+	// Auto-fetch on mount and every 10s
+	useEffect(() => {
+		fetchJobs();
+		const interval = setInterval(fetchJobs, 10_000);
+		return () => clearInterval(interval);
+	}, [fetchJobs]);
+
+	// Manage WebSocket connections for active jobs (separate from fetch cycle)
+	useEffect(() => {
+		const activeIds = new Set(
+			jobs.filter((j) => ['pending', 'downloading', 'transcoding', 'uploading'].includes(j.status)).map((j) => j.job_id),
+		);
+		const ws = wsRef.current;
+
+		// Close connections for jobs no longer active
+		for (const [id, socket] of ws) {
+			if (!activeIds.has(id)) {
+				try { socket.close(1000); } catch { /* ignore */ }
+				ws.delete(id);
+			}
+		}
+
+		// Open connections for new active jobs (only if not already connected)
+		for (const id of activeIds) {
+			if (ws.has(id)) continue;
+			try {
+				const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+				const socket = new WebSocket(`${wsProto}//${window.location.host}/ws/job/${encodeURIComponent(id)}`);
+				socket.onmessage = (event) => {
+					try {
+						const update = JSON.parse(event.data) as { status?: string; progress?: number; error?: string };
+						if (update.status) {
+							setJobs((prev) => prev.map((j) =>
+								j.job_id === id ? { ...j, status: update.status ?? j.status, error: update.error ?? j.error } : j,
+							));
+						}
+					} catch { /* ignore parse errors */ }
+				};
+				socket.onclose = () => {
+					ws.delete(id);
+					setLiveJobIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+				};
+				socket.onopen = () => {
+					setLiveJobIds((prev) => new Set(prev).add(id));
+				};
+				ws.set(id, socket);
+			} catch { /* WebSocket failed — REST still works */ }
+		}
+
+		// Update live indicator
+		setLiveJobIds(new Set([...ws.keys()]));
+	}, [jobs]);
+
+	// Cleanup all WebSockets on unmount
+	useEffect(() => {
+		return () => {
+			for (const [, socket] of wsRef.current) {
+				try { socket.close(1000); } catch { /* ignore */ }
+			}
+			wsRef.current.clear();
+		};
+	}, []);
+
+	const activeJobs = jobs.filter((j) => ['pending', 'downloading', 'transcoding', 'uploading'].includes(j.status));
+	const recentJobs = jobs.filter((j) => !['pending', 'downloading', 'transcoding', 'uploading'].includes(j.status));
+
+	return (
+		<div>
+			{/* Controls */}
+			<div className="flex items-center gap-3 mb-4">
+				<input
+					type="text"
+					value={filter}
+					onChange={(e) => setFilter(e.target.value)}
+					onKeyDown={(e) => e.key === 'Enter' && fetchJobs()}
+					placeholder="Filter by path, status..."
+					className="flex-1 px-3 py-1.5 text-sm rounded-md border font-mono"
+					style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', color: 'var(--text)' }}
+				/>
+				<select
+					value={hours}
+					onChange={(e) => setHours(Number(e.target.value))}
+					className="px-3 py-1.5 text-sm rounded-md border"
+					style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', color: 'var(--text)' }}
+				>
+					{[1, 6, 12, 24, 48, 168].map((h) => (
+						<option key={h} value={h}>{h}h</option>
+					))}
+				</select>
+				<button
+					onClick={fetchJobs}
+					disabled={loading}
+					className="px-3 py-1.5 text-sm rounded-md"
+					style={{ background: 'var(--accent)', color: 'white', opacity: loading ? 0.5 : 1 }}
+				>
+					{loading ? 'Loading...' : 'Refresh'}
+				</button>
+			</div>
+			{error && <div className="text-sm mb-4 p-3 rounded-md border" style={{ color: 'var(--error)', borderColor: 'var(--error)', background: 'rgba(239,68,68,0.1)' }}>{error}</div>}
+
+			{/* Active jobs */}
+			{activeJobs.length > 0 && (
+				<div className="mb-6">
+					<h3 className="text-sm font-medium mb-3">Active ({activeJobs.length})</h3>
+					<div className="space-y-2">
+						{activeJobs.map((job) => (
+							<JobCard key={job.job_id} job={job} isLive={liveJobIds.has(job.job_id)} />
+						))}
+					</div>
+				</div>
+			)}
+
+			{/* Recent jobs */}
+			{recentJobs.length > 0 && (
+				<div>
+					<h3 className="text-sm font-medium mb-3">Recent ({recentJobs.length})</h3>
+					<div className="overflow-x-auto">
+						<table className="w-full text-xs">
+							<thead>
+								<tr style={{ color: 'var(--text-muted)' }}>
+									<th className="text-left py-1 pr-3">Status</th>
+									<th className="text-left py-1 pr-3">Path</th>
+									<th className="text-left py-1 pr-3">Origin</th>
+									<th className="text-left py-1 pr-3">Params</th>
+									<th className="text-right py-1 pr-3">Size</th>
+									<th className="text-right py-1 pr-3">Duration</th>
+									<th className="text-left py-1">Created</th>
+								</tr>
+							</thead>
+							<tbody>
+								{recentJobs.map((job) => {
+									const dur = job.started_at && job.completed_at
+										? ((job.completed_at - job.started_at) / 1000)
+										: null;
+									return (
+										<tr key={job.job_id} className="border-t" style={{ borderColor: 'var(--border)' }}>
+											<td className="py-1.5 pr-3">
+												<span style={{ color: job.status === 'complete' ? 'var(--success)' : 'var(--error)' }}>
+													{job.status}
+												</span>
+											</td>
+											<td className="py-1.5 pr-3 font-mono truncate max-w-[200px]">{job.path}</td>
+											<td className="py-1.5 pr-3" style={{ color: 'var(--text-muted)' }}>{job.origin ?? '—'}</td>
+											<td className="py-1.5 pr-3 font-mono truncate max-w-[200px]" style={{ color: 'var(--text-muted)' }}>
+												{job.params ? Object.entries(job.params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).slice(0, 3).join(', ') : '—'}
+											</td>
+											<td className="py-1.5 pr-3 text-right" style={{ color: 'var(--text-muted)' }}>{job.output_size ? formatBytes(job.output_size) : '—'}</td>
+											<td className="py-1.5 pr-3 text-right" style={{ color: 'var(--text-muted)' }}>
+												{dur != null ? (dur < 60 ? `${dur.toFixed(0)}s` : `${(dur / 60).toFixed(1)}m`) : '—'}
+											</td>
+											<td className="py-1.5" style={{ color: 'var(--text-muted)' }}>
+												{new Date(job.created_at).toLocaleTimeString()}
+											</td>
+										</tr>
+									);
+								})}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			)}
+
+			{/* Empty state */}
+			{jobs.length === 0 && !loading && (
+				<div className="text-center py-12" style={{ color: 'var(--text-muted)' }}>
+					<p className="text-sm mb-2">No container transform jobs found</p>
+					<p className="text-xs">Jobs appear here when a source exceeds the binding size limit ({'>'}100MB) or needs container-only params (fps, speed, rotate, etc).</p>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function JobCard({ job, isLive }: { job: JobRow; isLive: boolean }) {
+	const statusColor = {
+		pending: 'var(--text-muted)',
+		downloading: 'var(--accent)',
+		transcoding: 'var(--accent)',
+		uploading: 'var(--accent)',
+		complete: 'var(--success)',
+		failed: 'var(--error)',
+	}[job.status] ?? 'var(--text-muted)';
+
+	const elapsed = job.started_at
+		? ((job.completed_at ?? Date.now()) - job.started_at) / 1000
+		: (Date.now() - job.created_at) / 1000;
+
+	return (
+		<div className="rounded-lg border p-4" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+			<div className="flex items-center justify-between mb-2">
+				<div className="flex items-center gap-2">
+					<span className="inline-block w-2 h-2 rounded-full" style={{ background: statusColor }} />
+					<span className="text-sm font-medium capitalize" style={{ color: statusColor }}>{job.status}</span>
+					{isLive && (
+						<span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--accent)', color: 'white', opacity: 0.8 }}>LIVE</span>
+					)}
+					<span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+						{elapsed < 60 ? `${elapsed.toFixed(0)}s` : `${(elapsed / 60).toFixed(1)}m`}
+					</span>
+				</div>
+				<span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+					{job.origin ?? ''}
+				</span>
+			</div>
+			<div className="text-xs font-mono truncate mb-2" style={{ color: 'var(--text-muted)' }}>
+				{job.path}
+			</div>
+			{job.params && Object.keys(job.params).length > 0 && (
+				<div className="text-xs font-mono mb-2" style={{ color: 'var(--text-muted)' }}>
+					{Object.entries(job.params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).slice(0, 6).join(', ')}
+				</div>
+			)}
+			{job.error && (
+				<div className="text-xs p-2 rounded mt-1" style={{ background: 'rgba(239,68,68,0.1)', color: 'var(--error)' }}>
+					{job.error}
 				</div>
 			)}
 		</div>

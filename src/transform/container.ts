@@ -24,6 +24,7 @@
 import { Container, ContainerProxy } from '@cloudflare/containers';
 import type { TransformParams } from '../params/schema';
 import { AppError } from '../errors';
+import { completeJob, failJob, updateJobStatus } from '../queue/jobs-db';
 import * as log from '../log';
 
 // ContainerProxy must be exported from the Worker entry point for outbound
@@ -120,22 +121,63 @@ export class FFmpegContainer extends Container {
 		url: request.url,
 	});
 
+	// ── Job progress: GET /internal/job-progress ─────────────────────
+	if (request.method === 'GET' && url.pathname === '/internal/job-progress') {
+		const jobId = url.searchParams.get('jobId');
+		const phase = url.searchParams.get('phase') ?? 'transcoding';
+		const percent = parseInt(url.searchParams.get('percent') ?? '0', 10);
+
+		if (jobId) {
+			const transformJob = (env as Record<string, unknown>).TRANSFORM_JOB as DurableObjectNamespace | undefined;
+			if (transformJob) {
+				const jobDO = transformJob.get(transformJob.idFromName(jobId));
+				await jobDO.fetch(new Request('http://job/progress', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ phase, percent }),
+				})).catch(() => {});
+			}
+			// Update D1 status (coarse — just the phase, not percent)
+			const analyticsDb = (env as Record<string, unknown>).ANALYTICS as D1Database | undefined;
+			if (analyticsDb) updateJobStatus(analyticsDb, jobId, phase);
+		}
+		return new Response('ok');
+	}
+
 	// ── Callback: POST /internal/container-result ─────────────────────
 	if (request.method === 'POST' && url.pathname === '/internal/container-result') {
 		const path = url.searchParams.get('path');
 		const cacheKey = url.searchParams.get('cacheKey');
 		const requestUrl = url.searchParams.get('requestUrl');
+		const jobId = url.searchParams.get('jobId');
 
 		if (!path || !cacheKey) {
 			log.error('Container callback missing params', { path, cacheKey });
 			return new Response(JSON.stringify({ ok: false, error: 'missing params' }), { status: 400 });
 		}
 
+		// Helper to notify TransformJobDO of state changes
+		const transformJob = (env as Record<string, unknown>).TRANSFORM_JOB as DurableObjectNamespace | undefined;
+		const notifyJob = async (action: string, body?: object) => {
+			if (!jobId || !transformJob) return;
+			try {
+				const jobDO = transformJob.get(transformJob.idFromName(jobId));
+				await jobDO.fetch(new Request(`http://job/${action}`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: body ? JSON.stringify(body) : '{}',
+				}));
+			} catch { /* best-effort */ }
+		};
+
+		const analyticsDb = (env as Record<string, unknown>).ANALYTICS as D1Database | undefined;
+
 		const isError = request.headers.get('X-Transform-Error') === 'true';
 		if (isError) {
 			const errBody = await request.text().catch(() => '');
-			// Log the tail of the error — that's where ffmpeg's actual error message is
 			log.error('Container async transform failed', { cacheKey, path, errorTail: errBody.slice(-1500) });
+			await notifyJob('fail', { error: `ffmpeg transform failed: ${errBody.slice(-500)}` });
+			if (jobId && analyticsDb) failJob(analyticsDb, jobId, errBody.slice(-500));
 			return new Response(JSON.stringify({ ok: false, error: 'transform failed' }), { status: 200 });
 		}
 
@@ -169,6 +211,8 @@ export class FFmpegContainer extends Container {
 		// streams into cache.put + serves to client in one shot.
 		// Store in R2 — container always sends Content-Length (from stat() on
 		// the ffmpeg output file), so we stream via FixedLengthStream.
+		await notifyJob('progress', { phase: 'uploading', percent: 90 });
+
 		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
 		const r2Key = `_transformed/${cacheKey}`;
 		if (r2) {
@@ -190,6 +234,11 @@ export class FFmpegContainer extends Container {
 		// (The DO instance is unique per transform — when R2 put succeeds,
 		// the job is done. The DO's jobInFlight flag resets on next onStop
 		// or when the sleepAfter timer fires.)
+
+		await notifyJob('complete');
+		if (jobId && analyticsDb) {
+			completeJob(analyticsDb, jobId, contentLength ? parseInt(contentLength, 10) : undefined);
+		}
 
 		log.info('Container result stored in R2', {
 			cacheKey, path, r2Key, contentType,
@@ -230,6 +279,54 @@ export class FFmpegContainer extends Container {
 	// http:// because that's all the outbound handler can intercept, but
 	// the actual remote server expects HTTPS (and would 301 redirect).
 	const upgraded = new Request(request.url.replace(/^http:\/\//, 'https://'), request);
+
+	// Source dedup: cache large remote downloads in R2 so concurrent containers
+	// for the same source file don't each download 725MB independently.
+	// Only cache GET requests for video-like URLs (not callbacks, progress, etc.)
+	if (request.method === 'GET') {
+		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
+		if (r2) {
+			const srcPath = new URL(upgraded.url).pathname.replace(/^\/+/, '');
+			const srcCacheKey = `_source-cache/${srcPath}`;
+
+			// Check if source is already cached in R2
+			const cached = await r2.get(srcCacheKey);
+			if (cached) {
+				log.info('Source cache HIT', { url: upgraded.url, key: srcCacheKey, size: cached.size });
+				return new Response(cached.body, {
+					headers: {
+						'Content-Type': cached.httpMetadata?.contentType ?? 'application/octet-stream',
+						'Content-Length': String(cached.size),
+					},
+				});
+			}
+
+			// Download and tee: one stream to container, one to R2
+			const resp = await fetch(upgraded);
+			if (resp.ok && resp.body) {
+				const contentLength = resp.headers.get('Content-Length');
+				const ct = resp.headers.get('Content-Type') ?? 'application/octet-stream';
+				// Only cache if we know the size (needed for FixedLengthStream)
+				if (contentLength && parseInt(contentLength, 10) > 1_000_000) {
+					const [stream1, stream2] = resp.body.tee();
+					// Background: store in R2 for other containers
+					const fixed = new FixedLengthStream(parseInt(contentLength, 10));
+					stream2.pipeTo(fixed.writable).catch(() => {});
+					r2.put(srcCacheKey, fixed.readable, {
+						httpMetadata: { contentType: ct },
+					}).then(() => log.info('Source cached in R2', { key: srcCacheKey, size: contentLength }))
+						.catch(() => {});
+					// Return the other stream to the container
+					return new Response(stream1, {
+						status: resp.status,
+						headers: resp.headers,
+					});
+				}
+			}
+			return resp;
+		}
+	}
+
 	return fetch(upgraded);
 };
 

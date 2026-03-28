@@ -84,4 +84,21 @@ CREATE TABLE IF NOT EXISTS transform_log (
 );
 CREATE INDEX IF NOT EXISTS idx_log_ts ON transform_log(ts);
 CREATE INDEX IF NOT EXISTS idx_log_status ON transform_log(status);
+
+CREATE TABLE IF NOT EXISTS transform_jobs (
+  job_id       TEXT PRIMARY KEY,
+  path         TEXT NOT NULL,
+  origin       TEXT,
+  status       TEXT NOT NULL DEFAULT 'pending',
+  params_json  TEXT,
+  source_url   TEXT,
+  source_type  TEXT,
+  created_at   INTEGER NOT NULL,
+  started_at   INTEGER,
+  completed_at INTEGER,
+  error        TEXT,
+  output_size  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON transform_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_created ON transform_jobs(created_at);
 `;
