@@ -1,7 +1,9 @@
 /**
  * Shared types for Worker bindings and Hono context.
  */
+import type { Hono } from 'hono';
 import type { MediaBinding } from './transform/binding';
+import type { AppConfig } from './config/schema';
 
 /** Worker environment bindings. */
 export interface Env {
@@ -19,3 +21,12 @@ export interface Env {
 	// Container (optional)
 	FFMPEG_CONTAINER?: DurableObjectNamespace;
 }
+
+/** Hono context variables set by middleware. */
+export type Variables = {
+	config: AppConfig;
+	startTime: number;
+};
+
+/** Fully-typed Hono app type used across all handlers/middleware. */
+export type App = Hono<{ Bindings: Env; Variables: Variables }>;

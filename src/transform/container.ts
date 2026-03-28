@@ -153,6 +153,54 @@ export async function transformViaContainerUrl(
 	return response;
 }
 
+/**
+ * Build a deterministic container DO instance key.
+ *
+ * Each unique (origin, path, params) combination gets its own DO instance
+ * to prevent transforms with different params from colliding on the same
+ * container. The hash covers all transform-affecting params (not playback
+ * hints or metadata like filename/derivative name).
+ *
+ * Format: `ffmpeg:{origin}:{path}:{paramsHash}`
+ */
+export function buildContainerInstanceKey(
+	originName: string,
+	path: string,
+	params: TransformParams,
+): string {
+	// Include only transform-affecting params in the hash
+	const hashInput = [
+		params.width,
+		params.height,
+		params.fit,
+		params.mode,
+		params.time,
+		params.duration,
+		params.audio,
+		params.format,
+		params.quality,
+		params.compression,
+		params.fps,
+		params.speed,
+		params.rotate,
+		params.crop,
+		params.bitrate,
+		params.imageCount,
+	]
+		.map((v) => (v === undefined ? '' : String(v)))
+		.join(':');
+
+	// Simple FNV-1a 32-bit hash — fast, deterministic, good distribution
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < hashInput.length; i++) {
+		hash ^= hashInput.charCodeAt(i);
+		hash = (hash * 0x01000193) >>> 0;
+	}
+	const hashHex = hash.toString(16).padStart(8, '0');
+
+	return `ffmpeg:${originName}:${path}:${hashHex}`;
+}
+
 function sanitizeParams(params: TransformParams): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(params)) {

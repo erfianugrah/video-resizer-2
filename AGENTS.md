@@ -360,54 +360,54 @@ export default app;
 
 ```
 src/
-  index.ts                    # Hono app, route + middleware wiring
+  index.ts                    # Hono app wiring only (70 lines): middleware + routes + export
   errors.ts                   # AppError class
-  types.ts                    # Shared types, binding interfaces
+  log.ts                      # Structured JSON logging for Workers Logs
+  types.ts                    # Shared types: Env, Variables, App
   middleware/
-    config.ts                 # Load config from KV/env, Zod 4 validate, set c.var
-    error.ts                  # app.onError: AppError + MediaError -> JSON response
-    cache.ts                  # cache.match() before, cache.put() after (waitUntil)
-    params.ts                 # Translate Akamai -> parse -> resolve derivative -> c.var
+    via.ts                    # Via header loop prevention
+    config.ts                 # Load config from KV, set c.var.config
+    passthrough.ts            # CDN-CGI passthrough + non-video extension check
     auth.ts                   # Bearer token auth for admin routes
-    passthrough.ts            # Non-video extension check, Via loop prevention
+    error.ts                  # app.onError: AppError + D1 analytics logging
+  handlers/
+    admin.ts                  # GET/POST /admin/config, POST /admin/cache/bust,
+                              #   GET /admin/analytics, GET /admin/analytics/errors
+    internal.ts               # POST /internal/container-result (async callback),
+                              #   GET /internal/r2-source (raw R2 for container)
+    transform.ts              # GET * — main transform pipeline (~530 lines):
+                              #   params → derivative → responsive → origin → cache →
+                              #   coalesce → source → transform → headers → tee → cache.put
   config/
     schema.ts                 # Single Zod 4 schema: origins, derivatives, cache, etc.
     loader.ts                 # Load from KV/env, validate, return typed config
   params/
     schema.ts                 # Zod 4 schema: canonical param definitions + validation
-    akamai.ts                 # Akamai/IMQuery translation + derivative matching
+                              #   + Akamai/IMQuery translation + needsContainer()
     derivatives.ts            # Named presets lookup + application
     responsive.ts             # Client Hints / CF-Device-Type auto-sizing
   transform/
-    router.ts                 # Decide: Media binding vs container, based on params
     binding.ts                # env.MEDIA pipeline: input -> transform -> output
-    container.ts              # FFmpeg container DO: sync + async + callback handler
-    strategies/
-      video.ts                # Video mode: binding options assembly
-      frame.ts                # Frame mode: single still image
-      spritesheet.ts          # Spritesheet mode: multi-frame JPEG
-      audio.ts                # Audio mode: M4A extraction
+    cdncgi.ts                 # cdn-cgi/media URL construction + fetch
+    container.ts              # FFmpegContainer DO class + sync/async/URL-based clients
+                              #   + buildContainerInstanceKey (FNV-1a hash)
   sources/
     router.ts                 # Match path -> origin -> try sources by priority
-    r2.ts                     # R2 bucket get -> ReadableStream
-    remote.ts                 # HTTP fetch with auth -> ReadableStream
+    fetch.ts                  # Two-tier source resolution (R2 stream / remote URL)
     auth.ts                   # Auth impls: aws-s3 (aws4fetch), bearer, header
     presigned.ts              # Presigned URL generation + KV caching
   cache/
     key.ts                    # Deterministic cache key from path + resolved params
-    version.ts                # KV-backed version get/put for cache busting
+    store.ts                  # caches.default helpers (match/put/delete)
+    version.ts                # KV-backed version get/bump/set/delete
     coalesce.ts               # Single-flight request dedup (BoundedLRUMap)
   analytics/
     middleware.ts             # Log every request outcome to D1 (waitUntil)
     queries.ts                # Aggregation SQL for admin API
     schema.sql                # D1 table DDL (also used by weekly cron)
-  debug/
-    inject.ts                 # Fetch debug.html from ASSETS, inject diagnostics
-    diagnostics.ts            # Collect request diagnostics for debug UI
-  admin/
-    config.ts                 # GET/POST /admin/config handlers
-    analytics.ts              # GET /admin/analytics, GET /admin/analytics/errors
-debug-ui/                     # Astro + React debug dashboard (separate build)
+container/
+  Dockerfile                  # node:22-slim + ffmpeg
+  server.mjs                  # HTTP server: /transform, /transform-url, /health
 ```
 
 ### Design principles
@@ -1062,24 +1062,31 @@ rclone ls erfi:videos/
 
 ### Remaining
 
-- [ ] **Container callback completion** — the async container accepts jobs (202) and
-      the Worker returns passthrough instantly. The container downloads the source and
-      runs ffmpeg, but the callback POST to `/internal/container-result` needs debugging:
-      - Container may need more time for 725MB downloads (verify with container logs)
-      - Callback URL may be intercepted by passthrough middleware (verify routing)
-      - Container `standard-1` instance may need more disk for large temp files
-      - The `/internal/container-result` handler stores to `caches.default` which requires
-        the cache URL to exactly match future `cache.match()` requests
 - [ ] **Debug UI frontend** — Astro+React dashboard from ASSETS binding.
       `?debug=view` JSON diagnostics works as lightweight replacement.
+- [ ] **Container video transcoding E2E verification** — test large video output
+      stored in cache and served with range requests. Frame extraction is confirmed
+      working end-to-end.
+
+### Fixed (previously remaining)
+
+- [x] **Container callback completion** — fixed 4 bugs in the async callback loop:
+      1. Container output file path mismatch — `handleTransform` and `handleTransformAsync`
+         read from `.mp4` path even for frame/audio modes; now use `findOutputFile()`.
+      2. Self-referencing URL loop — R2-only sources used `https://{zone}/{path}` as the
+         container fetch URL, which would hit our own transform pipeline. Now uses
+         `/internal/r2-source?key=...` endpoint that serves raw R2 objects.
+      3. Cache key method mismatch — callback handler created a bare `new Request(url)`,
+         while the Cache API only stores GET responses. Now explicitly sets `method: 'GET'`.
+      4. Temp file cleanup — `handleTransform` and `handleTransformAsync` now clean up
+         alternative output extensions (.png, .jpg, .m4a, .webm).
+- [x] **Container DO instance key collision** — each unique (origin, path, params)
+      combination now gets its own DO instance via `buildContainerInstanceKey()` which
+      hashes transform-affecting params with FNV-1a. 9 unit tests verify correctness.
+- [x] **Extract index.ts** — 777 lines split into 5 middleware files + 3 handler files.
+      `index.ts` is now 70 lines of wiring only. 151 unit tests passing.
 
 ### Known flaws (to fix)
-
-**Container DO instance key collision:** All transforms of the same file share one
-DO instance (`ffmpeg:{origin}:{path}`). When multiple different transforms (frame vs
-video, different widths) hit the same file, the DO queues/replays old requests.
-Fix: include a hash of the transform params in the instance key so each unique
-transform gets its own DO instance. E.g. `ffmpeg:{origin}:{path}:{paramsHash}`.
 
 **Container video output not verified in cache:** Frame extraction (26KB JPEG) from
 big_buck_bunny was confirmed working end-to-end (container downloaded 725MB, extracted

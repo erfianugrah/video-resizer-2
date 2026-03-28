@@ -102,11 +102,10 @@ async function handleTransform(req, res) {
 		// Run ffmpeg
 		await runFfmpeg(args);
 
-		// Read output and send
-		const output = await readFile(outputPath);
-		const contentType = params.mode === 'audio' ? 'audio/mp4'
-			: params.mode === 'frame' ? (params.format === 'png' ? 'image/png' : 'image/jpeg')
-			: 'video/mp4';
+		// Read output from correct path (may differ by mode/format)
+		const actualOutput = findOutputFile(outputPath, params);
+		const output = await readFile(actualOutput);
+		const contentType = getContentType(params);
 
 		res.writeHead(200, {
 			'Content-Type': contentType,
@@ -114,9 +113,13 @@ async function handleTransform(req, res) {
 		});
 		res.end(output);
 	} finally {
-		// Cleanup temp files
+		// Cleanup temp files (including alternative extensions)
 		await unlink(inputPath).catch(() => {});
 		await unlink(outputPath).catch(() => {});
+		const altExts = ['.png', '.jpg', '.m4a', '.webm'];
+		for (const ext of altExts) {
+			await unlink(outputPath.replace(/\.mp4$/, ext)).catch(() => {});
+		}
 	}
 }
 
@@ -155,10 +158,9 @@ async function handleTransformAsync(req, res) {
 		console.log(`[${id}] async ffmpeg ${args.join(' ')}`);
 		await runFfmpeg(args);
 
-		const output = await readFile(outputPath);
-		const contentType = params.mode === 'audio' ? 'audio/mp4'
-			: params.mode === 'frame' ? (params.format === 'png' ? 'image/png' : 'image/jpeg')
-			: 'video/mp4';
+		const actualOutput = findOutputFile(outputPath, params);
+		const output = await readFile(actualOutput);
+		const contentType = getContentType(params);
 
 		// POST result to callback
 		await fetch(callbackUrl, {
@@ -185,6 +187,10 @@ async function handleTransformAsync(req, res) {
 	} finally {
 		await unlink(inputPath).catch(() => {});
 		await unlink(outputPath).catch(() => {});
+		const altExts = ['.png', '.jpg', '.m4a', '.webm'];
+		for (const ext of altExts) {
+			await unlink(outputPath.replace(/\.mp4$/, ext)).catch(() => {});
+		}
 	}
 }
 
