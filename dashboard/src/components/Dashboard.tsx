@@ -7,23 +7,22 @@ interface AnalyticsSummary {
 	success: number;
 	errors: number;
 	cacheHits: number;
-	cacheMisses: number;
-	hitRate: string;
-	avgLatency: number;
-	p50Latency: number;
-	p95Latency: number;
+	cacheHitRate: number;
+	avgLatencyMs: number;
+	p50LatencyMs: number | null;
+	p95LatencyMs: number | null;
 	byStatus: { status: number; count: number }[];
 	byOrigin: { origin: string; count: number }[];
 	byDerivative: { derivative: string; count: number }[];
-	bySource: { transform_source: string; count: number }[];
+	byTransformSource: { source: string; count: number }[];
 }
 
 interface AnalyticsError {
 	path: string;
 	status: number;
-	error_code: string;
+	errorCode: string | null;
 	ts: number;
-	duration_ms: number;
+	durationMs: number | null;
 }
 
 interface DiagnosticsResult {
@@ -162,12 +161,12 @@ function AnalyticsTab({ token }: { token: string }) {
 						<StatCard label="Total Requests" value={summary.total} />
 						<StatCard label="Success" value={summary.success} color="var(--success)" />
 						<StatCard label="Errors" value={summary.errors} color="var(--error)" />
-						<StatCard label="Cache Hit Rate" value={summary.hitRate} color="var(--accent)" />
+						<StatCard label="Cache Hit Rate" value={`${(summary.cacheHitRate * 100).toFixed(1)}%`} color="var(--accent)" />
 					</div>
 					<div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
-						<StatCard label="Avg Latency" value={`${summary.avgLatency}ms`} />
-						<StatCard label="p50 Latency" value={`${summary.p50Latency}ms`} />
-						<StatCard label="p95 Latency" value={`${summary.p95Latency}ms`} />
+						<StatCard label="Avg Latency" value={`${summary.avgLatencyMs ?? 0}ms`} />
+						<StatCard label="p50 Latency" value={`${summary.p50LatencyMs ?? 0}ms`} />
+						<StatCard label="p95 Latency" value={`${summary.p95LatencyMs ?? 0}ms`} />
 					</div>
 
 					{/* Breakdowns */}
@@ -175,7 +174,7 @@ function AnalyticsTab({ token }: { token: string }) {
 						<BreakdownTable title="By Status" rows={summary.byStatus?.map((r) => [String(r.status), r.count]) ?? []} />
 						<BreakdownTable title="By Origin" rows={summary.byOrigin?.map((r) => [r.origin ?? 'unknown', r.count]) ?? []} />
 						<BreakdownTable title="By Derivative" rows={summary.byDerivative?.map((r) => [r.derivative ?? 'none', r.count]) ?? []} />
-						<BreakdownTable title="By Transform Source" rows={summary.bySource?.map((r) => [r.transform_source ?? 'unknown', r.count]) ?? []} />
+						<BreakdownTable title="By Transform Source" rows={summary.byTransformSource?.map((r) => [r.source ?? 'unknown', r.count]) ?? []} />
 					</div>
 
 					{/* Errors table */}
@@ -201,8 +200,8 @@ function AnalyticsTab({ token }: { token: string }) {
 												</td>
 												<td className="py-1.5 pr-3 font-mono truncate max-w-[200px]">{e.path}</td>
 												<td className="py-1.5 pr-3" style={{ color: 'var(--error)' }}>{e.status}</td>
-												<td className="py-1.5 pr-3 font-mono">{e.error_code}</td>
-												<td className="py-1.5 text-right" style={{ color: 'var(--text-muted)' }}>{e.duration_ms}ms</td>
+												<td className="py-1.5 pr-3 font-mono">{e.errorCode ?? '—'}</td>
+												<td className="py-1.5 text-right" style={{ color: 'var(--text-muted)' }}>{e.durationMs ?? '—'}ms</td>
 											</tr>
 										))}
 									</tbody>
