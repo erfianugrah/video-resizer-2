@@ -64,19 +64,103 @@ export class FFmpegContainer extends Container {
 }
 
 /**
- * Outbound handler: intercepts all HTTP requests from the container.
+ * Outbound handler: intercepts ALL HTTP requests from the container.
  *
- * The container makes http:// requests (because HTTPS interception isn't
- * supported yet). The Worker's fetch() upgrades to HTTPS automatically.
- * This gives the container:
- *   - Access to our own Worker endpoints (callback, R2 source)
- *   - Access to external sources (videos.erfi.dev, S3, etc.)
+ * Routes requests based on URL path:
+ *   /internal/container-result  -> store in Cache API via bindings (callback)
+ *   /internal/r2-source         -> serve R2 object via bindings
+ *   everything else             -> proxy via fetch() (source downloads, etc.)
+ *
+ * This avoids hardcoding any domain — the container passes the zone host
+ * in the URL, and we match on path prefix only. The catch-all `outbound`
+ * handler sees every HTTP request regardless of destination host.
  */
-(FFmpegContainer as any).outbound = async (request: Request, env: any, ctx: any) => {
+(FFmpegContainer as any).outbound = async (request: Request, env: any, _ctx: any) => {
+	const url = new URL(request.url);
+
 	log.info('Container outbound', {
 		method: request.method,
 		url: request.url,
 	});
+
+	// ── Callback: POST /internal/container-result ─────────────────────
+	if (request.method === 'POST' && url.pathname === '/internal/container-result') {
+		const path = url.searchParams.get('path');
+		const cacheKey = url.searchParams.get('cacheKey');
+		const requestUrl = url.searchParams.get('requestUrl');
+
+		if (!path || !cacheKey) {
+			log.error('Container callback missing params', { path, cacheKey });
+			return new Response(JSON.stringify({ ok: false, error: 'missing params' }), { status: 400 });
+		}
+
+		const isError = request.headers.get('X-Transform-Error') === 'true';
+		if (isError) {
+			const errBody = await request.text().catch(() => '');
+			log.error('Container async transform failed', { cacheKey, path, error: errBody.slice(0, 500) });
+			return new Response(JSON.stringify({ ok: false, error: 'transform failed' }), { status: 200 });
+		}
+
+		const body = request.body;
+		if (!body) {
+			log.error('Container callback empty body', { path });
+			return new Response(JSON.stringify({ ok: false, error: 'empty body' }), { status: 400 });
+		}
+
+		const contentType = request.headers.get('Content-Type') ?? 'video/mp4';
+		const contentLength = request.headers.get('Content-Length');
+
+		const headers = new Headers();
+		headers.set('Content-Type', contentType);
+		if (contentLength) headers.set('Content-Length', contentLength);
+		headers.set('Cache-Control', 'public, max-age=86400');
+		headers.set('Accept-Ranges', 'bytes');
+		headers.set('Via', 'video-resizer');
+		headers.set('X-Transform-Source', 'container');
+
+		const cacheResponse = new Response(body, { status: 200, headers });
+		const cache = caches.default;
+		// Use the original user request URL so cache.match() finds it later.
+		// Fall back to https://{host}{path} if requestUrl wasn't provided.
+		const cacheUrl = requestUrl || `https://${url.host}${path}`;
+		const cacheRequest = new Request(cacheUrl, { method: 'GET' });
+
+		await cache.put(cacheRequest, cacheResponse);
+		log.info('Container result cached via outbound handler', {
+			cacheKey, path, cacheUrl, contentType,
+			contentLength: contentLength ?? 'unknown',
+		});
+
+		return new Response(JSON.stringify({ ok: true, cached: true }), {
+			headers: { 'Content-Type': 'application/json' },
+		});
+	}
+
+	// ── R2 source: GET /internal/r2-source ────────────────────────────
+	if (request.method === 'GET' && url.pathname === '/internal/r2-source') {
+		const key = url.searchParams.get('key');
+		const bucketBinding = url.searchParams.get('bucket') ?? 'VIDEOS';
+		if (!key) {
+			return new Response(JSON.stringify({ error: 'missing key' }), { status: 400 });
+		}
+		const bucket = (env as Record<string, unknown>)[bucketBinding] as R2Bucket | undefined;
+		if (!bucket) {
+			return new Response(JSON.stringify({ error: `bucket ${bucketBinding} not found` }), { status: 500 });
+		}
+		const object = await bucket.get(key);
+		if (!object) {
+			return new Response(JSON.stringify({ error: `object ${key} not found` }), { status: 404 });
+		}
+		log.info('Serving R2 source via outbound handler', { key, size: object.size });
+		return new Response(object.body, {
+			headers: {
+				'Content-Type': object.httpMetadata?.contentType ?? 'application/octet-stream',
+				'Content-Length': String(object.size),
+			},
+		});
+	}
+
+	// ── Everything else: proxy through Worker runtime ─────────────────
 	return fetch(request);
 };
 
