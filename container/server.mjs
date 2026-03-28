@@ -13,7 +13,10 @@
  */
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
-import { writeFile, readFile, unlink, mkdir } from 'node:fs/promises';
+import { writeFile, readFile, unlink, mkdir, stat } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { availableParallelism, cpus } from 'node:os';
@@ -378,9 +381,10 @@ async function handleTransformUrl(req, res) {
 		const resp = await fetch(sourceUrl);
 		if (!resp.ok) throw new Error(`Source fetch failed: ${resp.status}`);
 
-		const buffer = Buffer.from(await resp.arrayBuffer());
-		await writeFile(inputPath, buffer);
-		console.log(`[${id}] Source downloaded: ${buffer.length} bytes`);
+		// Stream to disk to avoid OOM on large files
+		await pipeline(Readable.fromWeb(resp.body), createWriteStream(inputPath));
+		const inputStat = await stat(inputPath);
+		console.log(`[${id}] Source streamed to disk: ${inputStat.size} bytes`);
 
 		const args = buildFfmpegArgs(inputPath, outputPath, params);
 		console.log(`[${id}] ffmpeg ${args.join(' ')}`);
@@ -415,12 +419,13 @@ async function processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputP
 
 		console.log(`[${id}] Async: fetching source from ${sourceUrl}`);
 		const resp = await fetch(sourceUrl);
-		console.log(`[${id}] Async: source response: status=${resp.status} content-type=${resp.headers.get('content-type')} content-length=${resp.headers.get('content-length')} redirected=${resp.redirected} url=${resp.url}`);
+		console.log(`[${id}] Async: source response: status=${resp.status} content-type=${resp.headers.get('content-type')} content-length=${resp.headers.get('content-length')}`);
 		if (!resp.ok) throw new Error(`Source fetch failed: ${resp.status} ${resp.statusText} (url: ${resp.url})`);
 
-		const buffer = Buffer.from(await resp.arrayBuffer());
-		await writeFile(inputPath, buffer);
-		console.log(`[${id}] Async: source downloaded: ${buffer.length} bytes`);
+		// Stream to disk instead of buffering entire file in memory (prevents OOM on 725MB+)
+		await pipeline(Readable.fromWeb(resp.body), createWriteStream(inputPath));
+		const inputStat = await stat(inputPath);
+		console.log(`[${id}] Async: source streamed to disk: ${inputStat.size} bytes`);
 
 		const args = buildFfmpegArgs(inputPath, outputPath, params);
 		console.log(`[${id}] Async: ffmpeg ${args.join(' ')}`);

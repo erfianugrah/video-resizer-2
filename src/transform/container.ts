@@ -134,9 +134,35 @@ export class FFmpegContainer extends Container {
 		const cacheUrl = requestUrl || `https://${url.host}${path}`;
 		const cacheRequest = new Request(cacheUrl, { method: 'GET' });
 
-		await cache.put(cacheRequest, cacheResponse);
-		log.info('Container result cached via outbound handler', {
-			cacheKey, path, cacheUrl, contentType,
+		// Store in R2 (globally consistent). The container may run in a
+		// different colo than the client, so caches.default won't help.
+		// The Worker's transform handler checks R2 for container results,
+		// streams into cache.put + serves to client in one shot.
+		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
+		const r2Key = `_container-cache/${cacheKey}`;
+		if (r2 && contentLength) {
+			// R2 put() with a stream needs known length via FixedLengthStream
+			const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));
+			body.pipeTo(fixedStream.writable);
+			await r2.put(r2Key, fixedStream.readable, {
+				httpMetadata: { contentType },
+				customMetadata: { cacheUrl, cacheKey },
+			});
+		} else if (r2) {
+			// No content-length — fall back to buffering
+			const bodyBytes = await new Response(body).arrayBuffer();
+			await r2.put(r2Key, bodyBytes, {
+				httpMetadata: { contentType },
+				customMetadata: { cacheUrl, cacheKey },
+			});
+		}
+
+		// Clean up the pending dedup key
+		const kv = (env as Record<string, unknown>).CACHE_VERSIONS as KVNamespace | undefined;
+		if (kv) await kv.delete(`container-pending:${cacheKey}`).catch(() => {});
+
+		log.info('Container result stored in R2', {
+			cacheKey, path, r2Key, contentType,
 			contentLength: contentLength ?? 'unknown',
 		});
 
