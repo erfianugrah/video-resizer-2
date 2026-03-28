@@ -322,7 +322,7 @@ handler intercepts them.
 - `POST /transform` — synchronous: stream source in, receive transformed output
 - `POST /transform-async` — async: stream source + callbackUrl, respond 202
 - `POST /transform-url` — async URL-based: container fetches source directly
-  by URL, essential for >256MB files. Responds 202, POSTs result to callback.
+  by URL, essential for >100 MiB files. Responds 202, POSTs result to callback.
 - `GET /health` — health check
 
 ### Container ffmpeg features
@@ -343,7 +343,7 @@ high:   { crf: 18, preset: 'medium' }
 
 ### Async container flow (verified working)
 
-1. Transform handler detects oversized source (>256MB) or container-only params
+1. Transform handler detects oversized source (>100 MiB) or container-only params
 2. Checks KV dedup flag (`container-pending:{cacheKey}`) — skips if already pending
 3. Sets KV pending flag (15-min TTL), fires `POST /transform-url` to container DO
 4. Returns raw passthrough to client (`X-Transform-Pending: true`, not cached)
@@ -946,8 +946,8 @@ response headers → tee body → client + cache.put + D1 analytics`
 
 **Three-tier transform routing:**
 - R2 sources (≤100MB) → `env.MEDIA.input(stream)` binding
-- Remote sources (≤256MB) → `cdn-cgi/media` URL (edge transform, zero Worker memory)
-- Oversized (>256MB) or container-only params → FFmpeg container DO
+- Remote sources (≤100 MiB) → `cdn-cgi/media` URL (edge transform, zero Worker memory)
+- Oversized (>100 MiB) or container-only params → FFmpeg container DO
 - Source fallback chain: if one tier fails, falls through to next source
 
 **Cache working on `videos.erfi.io`:**
@@ -1161,6 +1161,6 @@ manually or set to "any origin".
 ### Done (previously remaining)
 
 - [x] **Enable Media Transformations on erfi.io zone** — enabled, cdn-cgi/media working.
-      `videos.erfi.dev` added to allowed origins. Remote sources (≤256MB) now transform
+      `videos.erfi.dev` added to allowed origins. Remote sources (≤100 MiB) now transform
       at the edge via cdn-cgi (zero Worker memory). Verified: rocky.mp4 frame in 0.27s,
       tablet video in 6.5s, erfi-135kg 1280x720 30s clip in 15.6s — all via cdn-cgi.

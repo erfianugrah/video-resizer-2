@@ -19,6 +19,7 @@ export interface AnalyticsSummary {
 	byOrigin: { origin: string; count: number }[];
 	byDerivative: { derivative: string; count: number }[];
 	byTransformSource: { source: string; count: number }[];
+	byErrorCode: { error_code: string; count: number }[];
 }
 
 /** A recent error entry. */
@@ -98,6 +99,14 @@ export async function getSummary(db: D1Database, sinceMs: number): Promise<Analy
 		.bind(sinceMs)
 		.all<{ source: string; count: number }>();
 
+	// By error code
+	const byErrorCode = await db
+		.prepare(
+			`SELECT error_code, COUNT(*) as count FROM transform_log WHERE ts > ? AND error_code IS NOT NULL GROUP BY error_code ORDER BY count DESC LIMIT 20`,
+		)
+		.bind(sinceMs)
+		.all<{ error_code: string; count: number }>();
+
 	return {
 		total,
 		success: agg?.success ?? 0,
@@ -111,6 +120,7 @@ export async function getSummary(db: D1Database, sinceMs: number): Promise<Analy
 		byOrigin: byOrigin.results,
 		byDerivative: byDerivative.results,
 		byTransformSource: byTransformSource.results,
+		byErrorCode: byErrorCode.results,
 	};
 }
 

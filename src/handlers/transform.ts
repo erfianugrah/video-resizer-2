@@ -291,7 +291,7 @@ export async function transformHandler(c: HonoContext) {
 					const object = await bucket.get(resolved);
 					if (!object) throw new Error(`R2 object not found: ${resolved}`);
 
-					const BINDING_SIZE_LIMIT = 100 * 1024 * 1024; // 100MB
+					const BINDING_SIZE_LIMIT = config.bindingSizeLimit;
 					etag = object.etag;
 					sourceType = 'r2';
 					rlog.info('Source fetched (R2)', { path: resolved, size: object.size, etag });
@@ -383,7 +383,7 @@ export async function transformHandler(c: HonoContext) {
 					}
 
 					// Check content-length via HEAD to detect oversized sources
-					const CDN_CGI_SIZE_LIMIT = 256 * 1024 * 1024; // 256MB
+					const CDN_CGI_SIZE_LIMIT = config.cdnCgiSizeLimit;
 					const headResp = await fetch(sourceUrl, { method: 'HEAD' }).catch(() => null);
 					const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
 

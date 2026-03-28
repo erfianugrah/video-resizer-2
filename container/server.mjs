@@ -207,17 +207,18 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 	const cpuCount = availableParallelism?.() ?? cpus().length;
 	const args = ['-y', '-threads', String(cpuCount)];
 
-	// Time offset — placed BEFORE -i for fast input seeking (avoids
-	// decoding everything before the seek point).
+	// Time offset — placed BEFORE -i for fast input seeking.
+	// Convert human-readable (5m, 30s, 1m30s) to seconds — ffmpeg
+	// doesn't understand "5m" or "30s" format.
 	if (params.time) {
-		args.push('-ss', params.time);
+		args.push('-ss', String(parseDuration(params.time)));
 	}
 
 	args.push('-i', inputPath);
 
-	// Duration
+	// Duration — same conversion needed
 	if (params.duration) {
-		args.push('-t', params.duration);
+		args.push('-t', String(parseDuration(params.duration)));
 	}
 
 	// Video filters
@@ -475,6 +476,31 @@ function getContentType(params) {
 	if (params.mode === 'audio') return 'audio/mp4';
 	if (params.mode === 'frame') return params.format === 'png' ? 'image/png' : 'image/jpeg';
 	return 'video/mp4';
+}
+
+/**
+ * Parse a human-readable duration string to seconds.
+ * Supports: "5s", "2m", "1m30s", "5m", "300", "1h", "1h30m15s"
+ * ffmpeg doesn't understand "5m" — it needs seconds or HH:MM:SS.
+ */
+function parseDuration(str) {
+	if (!str) return 0;
+	str = String(str).trim();
+	// Already numeric (seconds)
+	if (/^\d+(\.\d+)?$/.test(str)) return parseFloat(str);
+	let total = 0;
+	const h = str.match(/(\d+(?:\.\d+)?)h/);
+	const m = str.match(/(\d+(?:\.\d+)?)m(?!s)/); // m but not ms
+	const s = str.match(/(\d+(?:\.\d+)?)s/);
+	if (h) total += parseFloat(h[1]) * 3600;
+	if (m) total += parseFloat(m[1]) * 60;
+	if (s) total += parseFloat(s[1]);
+	// If nothing matched, try parsing as plain number
+	if (total === 0 && !h && !m && !s) {
+		const n = parseFloat(str);
+		if (!isNaN(n)) return n;
+	}
+	return total;
 }
 
 function findOutputFile(basePath, params) {

@@ -70,8 +70,8 @@ npm run check                 # TypeScript strict mode
          │    ┌─────────▼────┐  ┌──────▼──────┐  ┌───────────▼───────────┐
          │    │  R2 Source    │  │ Remote/     │  │  Container-Only       │
          │    │  ≤100MB       │  │ Fallback    │  │  params (fps/speed/   │
-         │    │  → env.MEDIA  │  │ ≤256MB      │  │  rotate/crop/bitrate) │
-         │    │  binding      │  │ → cdn-cgi/  │  │  or source >256MB     │
+         │    │  → env.MEDIA  │  │ ≤100 MiB      │  │  rotate/crop/bitrate) │
+         │    │  binding      │  │ → cdn-cgi/  │  │  or source >100 MiB     │
          │    │              │  │   media      │  │  → FFmpeg Container   │
          │    └──────┬───────┘  └──────┬──────┘  │    DO (async)         │
          │           │                 │          └───────────┬───────────┘
@@ -101,8 +101,8 @@ npm run check                 # TypeScript strict mode
 | Tier | Source | Size Limit | Method | Latency | Worker Memory |
 |------|--------|-----------|--------|---------|---------------|
 | 1 | R2 | ≤100MB | `env.MEDIA.input(stream)` | ~2-10s | Stream only |
-| 2 | Remote/Fallback | ≤256MB | `cdn-cgi/media` URL fetch | ~3-15s | Zero |
-| 3 | Any | >256MB or container-only params | FFmpeg Container DO | ~60-120s (async) | Zero |
+| 2 | Remote/Fallback | ≤100 MiB (default) | `cdn-cgi/media` URL fetch | ~3-15s | Zero |
+| 3 | Any | >100 MiB or container-only params | FFmpeg Container DO | ~60-120s (async) | Zero |
 
 Tier 1 streams from R2 directly into the Media binding — no HTTP subrequest needed.
 Tier 2 constructs a cdn-cgi/media URL and lets the edge handle both fetch and transform — video bytes never enter Worker memory.
@@ -111,7 +111,7 @@ Tier 3 fires an async FFmpeg job in a container DO, returns a passthrough immedi
 ### Container async flow
 
 ```
-Request 1 (cache miss, >256MB)
+Request 1 (cache miss, >100 MiB)
   → Worker fires container job (waitUntil)
   → Returns raw passthrough to client (X-Transform-Pending: true, not cached)
 

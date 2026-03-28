@@ -144,6 +144,13 @@ export const AppConfigSchema = z.object({
 	responsive: ResponsiveSchema.optional(),
 	passthrough: PassthroughSchema.default({ enabled: true, formats: ['mp4', 'webm', 'mov'] }),
 	container: ContainerSchema.optional(),
+	/** cdn-cgi/media input size limit in bytes. Default 100 MiB. Accounts with
+	 *  higher limits (e.g. 256 MiB) can increase this to avoid unnecessary
+	 *  container routing for mid-size remote sources. */
+	cdnCgiSizeLimit: z.number().positive().default(100 * 1024 * 1024),
+	/** Media binding input size limit in bytes. Default 100 MiB. Sources larger
+	 *  than this are routed to the container (sync or async). */
+	bindingSizeLimit: z.number().positive().default(100 * 1024 * 1024),
 });
 
 /** Validated application config. Immutable after parse. */
