@@ -150,39 +150,54 @@ export async function transformHandler(c: HonoContext) {
 		rlog.info('Cache MISS', { path });
 	}
 
-	// 3b. Check R2 for container-produced results.
-	//     Container results are stored in R2 (global) because the container
-	//     may run in a different colo. On hit: stream from R2, tee into
-	//     cache.put (for future same-colo hits) + serve to client.
-	const containerVersion = await getVersion(c.env.CACHE_VERSIONS, path);
-	const containerCacheKey = buildCacheKey(path, params, containerVersion);
-	const r2ContainerKey = `_container-cache/${containerCacheKey}`;
-	const r2Result = await c.env.VIDEOS.get(r2ContainerKey);
+	// 3b. Check R2 for previously transformed results.
+	//     ALL transform results (binding, cdn-cgi, container) are stored in R2
+	//     for persistent global availability. On hit: stream from R2, tee into
+	//     cache.put (for future same-colo edge cache hits) + serve to client.
+	const r2Version = await getVersion(c.env.CACHE_VERSIONS, path);
+	const r2CacheKey = buildCacheKey(path, params, r2Version);
+	const r2TransformKey = `_transformed/${r2CacheKey}`;
+	const r2Result = await c.env.VIDEOS.get(r2TransformKey);
 	if (r2Result) {
-		rlog.info('Container result found in R2', { r2Key: r2ContainerKey, size: r2Result.size });
+		rlog.info('R2 transform cache HIT', { r2Key: r2TransformKey, size: r2Result.size });
 		const ct = r2Result.httpMetadata?.contentType ?? 'video/mp4';
+		const transformSource = r2Result.customMetadata?.transformSource ?? 'unknown';
+
+		let maxAge = 86400;
+		const ttl = originMatch.origin.ttl;
+		if (ttl) maxAge = ttl.ok;
+
 		const headers = new Headers();
 		headers.set('Content-Type', ct);
 		headers.set('Content-Length', String(r2Result.size));
-		headers.set('Cache-Control', `public, max-age=86400`);
+		headers.set('Cache-Control', `public, max-age=${maxAge}`);
 		headers.set('Accept-Ranges', 'bytes');
 		headers.set('Via', 'video-resizer');
 		headers.set('X-Request-ID', requestId);
-		headers.set('X-Transform-Source', 'container');
+		headers.set('X-Transform-Source', transformSource);
 		headers.set('X-Origin', originMatch.origin.name);
-		headers.set('X-Cache-Key', containerCacheKey);
+		headers.set('X-Cache-Key', r2CacheKey);
+		headers.set('X-R2-Cache', 'HIT');
 		if (params.derivative) headers.set('X-Derivative', params.derivative);
 		if (params.width) headers.set('X-Resolved-Width', String(params.width));
 		if (params.height) headers.set('X-Resolved-Height', String(params.height));
 
+		// Cache-Tag for purge-by-tag
+		const tags: string[] = [];
+		if (params.derivative) tags.push(`derivative:${params.derivative}`);
+		tags.push(`origin:${originMatch.origin.name}`);
+		if (params.mode && params.mode !== 'video') tags.push(`mode:${params.mode}`);
+		if (originMatch.origin.cacheTags) tags.push(...originMatch.origin.cacheTags);
+		if (tags.length) headers.set('Cache-Tag', tags.join(','));
+
 		const [toClient, toCache] = r2Result.body.tee();
 
-		// Store in caches.default for future same-colo hits
+		// Store in caches.default for future same-colo edge cache hits
 		if (!skipCache) {
 			c.executionCtx.waitUntil(
 				cache.put(cacheReq, new Response(toCache, { status: 200, headers: new Headers(headers) }))
-					.then(() => rlog.info('R2 container result cached in colo', { path }))
-					.catch((err) => rlog.error('R2 container result cache.put failed', { error: err instanceof Error ? err.message : String(err) })),
+					.then(() => rlog.info('R2 result cached in colo', { path }))
+					.catch((err) => rlog.error('R2 result cache.put failed', { error: err instanceof Error ? err.message : String(err) })),
 			);
 		} else {
 			toCache.cancel().catch(() => {});
@@ -526,39 +541,20 @@ export async function transformHandler(c: HonoContext) {
 		headers.delete('Set-Cookie');
 		if (headers.get('Vary') === '*') headers.delete('Vary');
 
-		// 7. Tee body -> client + cache
+		// 7. Tee body -> client + cache.put + R2 put
 		const body = transformed.body;
 		if (!body) {
 			return new Response(null, { status: transformed.status, headers });
 		}
 
-		const [toClient, toCache] = body.tee();
 		const isPendingPassthrough = headers.get('X-Transform-Pending') === 'true';
 		const shouldCache = !skipCache && !isPendingPassthrough && transformed.status >= 200 && transformed.status < 400;
-
-		if (shouldCache) {
-			const cacheHeaders = new Headers(headers);
-			c.executionCtx.waitUntil(
-				cache
-					.put(cacheReq, new Response(toCache, { status: transformed.status, headers: cacheHeaders }))
-					.then(() => log.info('cache.put resolved', { requestId, path }))
-					.catch((err) =>
-						log.error('cache.put FAILED', {
-							requestId,
-							path,
-							error: err instanceof Error ? err.message : String(err),
-						}),
-					),
-			);
-		} else {
-			toCache.cancel().catch(() => {});
-		}
 
 		// Log to analytics (non-blocking)
 		if (c.env.ANALYTICS) {
 			logAnalyticsEvent(c.env.ANALYTICS, {
 				path,
-				origin: originMatch.origin.name,
+				origin: originMatch!.origin.name,
 				status: transformed.status,
 				mode: params.mode ?? null,
 				derivative: params.derivative ?? null,
@@ -571,7 +567,38 @@ export async function transformHandler(c: HonoContext) {
 			}, c.executionCtx.waitUntil.bind(c.executionCtx));
 		}
 
-		return new Response(toClient, { status: transformed.status, headers });
+		if (shouldCache) {
+			// Three-way tee: client + edge cache + R2 persistent store
+			const [toClient, rest] = body.tee();
+			const [toEdgeCache, toR2] = rest.tee();
+
+			// Edge cache (per-colo, fast)
+			c.executionCtx.waitUntil(
+				cache
+					.put(cacheReq, new Response(toEdgeCache, { status: transformed.status, headers: new Headers(headers) }))
+					.then(() => log.info('cache.put resolved', { requestId, path }))
+					.catch((err) => log.error('cache.put FAILED', { requestId, path, error: err instanceof Error ? err.message : String(err) })),
+			);
+
+			// R2 persistent store (global, survives cache eviction + cross-colo)
+			const r2StoreKey = `_transformed/${cacheKey}`;
+			const ct = headers.get('Content-Type') ?? 'video/mp4';
+			c.executionCtx.waitUntil(
+				new Response(toR2).arrayBuffer()
+					.then((buf) => c.env.VIDEOS.put(r2StoreKey, buf, {
+						httpMetadata: { contentType: ct },
+						customMetadata: { transformSource: sourceType === 'r2' ? 'binding' : 'cdn-cgi', cacheKey },
+					}))
+					.then(() => log.info('R2 transform stored', { requestId, path, r2Key: r2StoreKey }))
+					.catch((err) => log.error('R2 transform store FAILED', { requestId, path, error: err instanceof Error ? err.message : String(err) })),
+			);
+
+			return new Response(toClient, { status: transformed.status, headers });
+		} else {
+			const [toClient, unused] = body.tee();
+			unused.cancel().catch(() => {});
+			return new Response(toClient, { status: transformed.status, headers });
+		}
 	});
 
 	coalescer.set(coalesceKey, responsePromise);

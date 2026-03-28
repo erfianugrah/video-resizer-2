@@ -170,7 +170,7 @@ export class FFmpegContainer extends Container {
 		// Store in R2 — container always sends Content-Length (from stat() on
 		// the ffmpeg output file), so we stream via FixedLengthStream.
 		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
-		const r2Key = `_container-cache/${cacheKey}`;
+		const r2Key = `_transformed/${cacheKey}`;
 		if (r2) {
 			if (contentLength) {
 				const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));

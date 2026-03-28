@@ -444,6 +444,12 @@ src/
 container/
   Dockerfile                  # node:22-slim + ffmpeg
   server.mjs                  # HTTP server: /transform, /transform-url, /health
+dashboard/
+  astro.config.mjs            # Astro + React + Tailwind v4
+  src/components/Dashboard.tsx # Analytics + Debug tabs (React)
+  src/pages/index.astro       # Dashboard page entry
+scripts/
+  smoke.ts                    # Standalone smoke test (56 checks, tail capture)
 ```
 
 ### Design principles
@@ -632,7 +638,8 @@ consciously eliminated (with rationale).
 
 ### Debug UI
 
-- [x] `?debug=view` triggers debug page from ASSETS binding
+- [x] `?debug=view` triggers debug JSON diagnostics
+- [x] `/admin/dashboard` — Astro+React dashboard (analytics + debug tabs, HMAC session auth)
 - [x] Diagnostics injection: params, cache status, origin, timing, errors
 - [x] Debug response headers when debug enabled
 
@@ -660,7 +667,7 @@ consciously eliminated (with rationale).
 - [x] Weekly cron: `DROP TABLE` + recreate to keep D1 lean (7-day rolling window)
 - [x] `GET /admin/analytics` — JSON summary: success/failure counts, by status code, by origin, by derivative, p50/p95 latency
 - [x] `GET /admin/analytics/errors` — recent errors with path, status, error code
-- [ ] Dashboard page in debug UI (served from ASSETS)
+- [x] Dashboard page in debug UI (served from ASSETS)
 
 ---
 
@@ -1098,8 +1105,7 @@ rclone ls erfi:videos/
 
 ### Remaining
 
-- [ ] **Debug UI frontend** — Astro+React dashboard from ASSETS binding.
-      `?debug=view` JSON diagnostics works as lightweight replacement.
+- All v1 features implemented. No remaining items.
 
 ### Fixed (previously remaining)
 
