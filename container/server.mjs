@@ -432,17 +432,21 @@ async function processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputP
 		await runFfmpeg(args);
 
 		const actualOutput = findOutputFile(outputPath, params);
-		const output = await readFile(actualOutput);
+		const outputStat = await stat(actualOutput);
 		const contentType = getContentType(params);
 
-		console.log(`[${id}] Async: transform complete, ${output.length} bytes, posting to callback`);
+		console.log(`[${id}] Async: transform complete, ${outputStat.size} bytes, posting to callback`);
+		const { createReadStream } = await import('node:fs');
+		const outputStream = Readable.toWeb(createReadStream(actualOutput));
 		await fetch(callbackUrl, {
 			method: 'POST',
 			headers: {
 				'Content-Type': contentType,
+				'Content-Length': String(outputStat.size),
 				'X-Transform-ID': id,
 			},
-			body: output,
+			body: outputStream,
+			duplex: 'half',
 		});
 		console.log(`[${id}] Async: callback sent`);
 	} catch (err) {

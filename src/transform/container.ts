@@ -138,23 +138,26 @@ export class FFmpegContainer extends Container {
 		// different colo than the client, so caches.default won't help.
 		// The Worker's transform handler checks R2 for container results,
 		// streams into cache.put + serves to client in one shot.
+		// Store in R2 — container always sends Content-Length (from stat() on
+		// the ffmpeg output file), so we stream via FixedLengthStream.
 		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
 		const r2Key = `_container-cache/${cacheKey}`;
-		if (r2 && contentLength) {
-			// R2 put() with a stream needs known length via FixedLengthStream
-			const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));
-			body.pipeTo(fixedStream.writable);
-			await r2.put(r2Key, fixedStream.readable, {
-				httpMetadata: { contentType },
-				customMetadata: { cacheUrl, cacheKey },
-			});
-		} else if (r2) {
-			// No content-length — fall back to buffering
-			const bodyBytes = await new Response(body).arrayBuffer();
-			await r2.put(r2Key, bodyBytes, {
-				httpMetadata: { contentType },
-				customMetadata: { cacheUrl, cacheKey },
-			});
+		if (r2) {
+			if (contentLength) {
+				const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));
+				body.pipeTo(fixedStream.writable);
+				await r2.put(r2Key, fixedStream.readable, {
+					httpMetadata: { contentType },
+					customMetadata: { cacheUrl, cacheKey },
+				});
+			} else {
+				// Shouldn't happen — but handle gracefully
+				const bodyBytes = await new Response(body).arrayBuffer();
+				await r2.put(r2Key, bodyBytes, {
+					httpMetadata: { contentType },
+					customMetadata: { cacheUrl, cacheKey },
+				});
+			}
 		}
 
 		// Clean up the pending dedup key
