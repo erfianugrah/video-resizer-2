@@ -44,10 +44,14 @@ const BASE = typeof window !== 'undefined' ? window.location.origin : '';
 
 export default function Dashboard() {
 	const [tab, setTab] = useState<Tab>('analytics');
-	const [token, setToken] = useState(() =>
-		typeof window !== 'undefined' ? localStorage.getItem('vr2-token') ?? '' : '',
-	);
-	const [tokenSaved, setTokenSaved] = useState(!!token);
+	const [token, setToken] = useState('');
+	const [tokenSaved, setTokenSaved] = useState(false);
+
+	// Hydration-safe: read localStorage only after mount (avoids React error #418)
+	useEffect(() => {
+		const saved = localStorage.getItem('vr2-token') ?? '';
+		if (saved) { setToken(saved); setTokenSaved(true); }
+	}, []);
 
 	const saveToken = () => {
 		localStorage.setItem('vr2-token', token);
