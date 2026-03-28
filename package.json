@@ -11,11 +11,15 @@
 		"test:run": "vitest run",
 		"test:e2e": "vitest run --config vitest.e2e.config.ts",
 		"test:smoke": "npx tsx scripts/smoke.ts",
-		"test:smoke:container": "npx tsx scripts/smoke.ts --container"
+		"test:smoke:container": "npx tsx scripts/smoke.ts --container",
+		"test:browser": "npx playwright test",
+		"dashboard:build": "cd dashboard && npx astro build",
+		"dashboard:dev": "cd dashboard && npx astro dev"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.12.4",
 		"@cloudflare/workers-types": "^4.20260317.1",
+		"@playwright/test": "^1.58.2",
 		"typescript": "^6.0.2",
 		"vitest": "~3.2.0",
 		"wrangler": "^4.76.0"

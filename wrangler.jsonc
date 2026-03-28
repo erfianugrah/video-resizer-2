@@ -6,6 +6,10 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"account_id": "25f21f141824546aa72c74451a11b419",
 	"workers_dev": false,
+	"assets": {
+		"directory": "./dashboard/dist",
+		"binding": "ASSETS",
+	},
 	"observability": {
 		"enabled": true,
 		"logs": { "invocation_logs": true },

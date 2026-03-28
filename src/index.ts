@@ -46,6 +46,14 @@ app.post('/admin/cache/bust', postCacheBust);
 app.get('/admin/analytics', getAnalytics);
 app.get('/admin/analytics/errors', getAnalyticsErrors);
 
+// ── Dashboard (static assets, auth-gated) ────────────────────────────────
+
+import { dashboardAuth, dashboardLogin } from './handlers/dashboard';
+
+app.post('/admin/dashboard/login', dashboardLogin);
+app.get('/admin/dashboard', dashboardAuth);
+app.get('/admin/dashboard/*', dashboardAuth);
+
 // ── Internal routes ──────────────────────────────────────────────────────
 
 app.post('/internal/container-result', postContainerResult);
