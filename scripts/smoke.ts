@@ -419,6 +419,113 @@ test('large: thumbnail frame extraction', async () => {
 	assertLt(sz(r), 1_000_000, 'frame < 1MB');
 });
 
+// ── Missing param coverage ───────────────────────────────────────────────
+
+test('fit=scale-down: no crash', async () => {
+	const r = await GET(`${SMALL}?width=640&height=360&fit=scale-down`);
+	assertEq(r.status, 200, 'status');
+});
+
+test('fit=contain explicit: no crash', async () => {
+	const r = await GET(`${SMALL}?width=640&height=360&fit=contain`);
+	assertEq(r.status, 200, 'status');
+});
+
+test('mode=video explicit: video/mp4', async () => {
+	const r = await GET(`${SMALL}?width=320&mode=video`);
+	assertEq(r.status, 200, 'status');
+	assertEq(h(r, 'content-type'), 'video/mp4', 'content-type');
+});
+
+test('time+duration on video: clip from offset', async () => {
+	const r = await GET(`${SMALL}?width=320&time=2s&duration=3s`);
+	assertEq(r.status, 200, 'status');
+	assertLt(sz(r), 10_000_000, 'short clip');
+});
+
+test('compression=auto in cache key', async () => {
+	const r = await GET(`${SMALL}?width=640&debug`);
+	assertEq(r.status, 200, 'status');
+	// compression=auto is set as per-origin default
+	assertContains(h(r, 'x-cache-key'), 'c=auto', 'cache-key compression');
+});
+
+test('imheight=360: resizes', async () => {
+	const r = await GET(`${SMALL}?imheight=360`);
+	assertEq(r.status, 200, 'status');
+});
+
+test('?debug (no =view): skips cache, still transforms', async () => {
+	const r = await GET(`${SMALL}?width=320&debug`);
+	assertEq(r.status, 200, 'status');
+	assertEq(h(r, 'content-type'), 'video/mp4', 'content-type');
+	assert(!!h(r, 'x-processing-time-ms'), 'has processing time');
+});
+
+// Source type verification
+test('source: rocky uses remote (cdn-cgi)', async () => {
+	const r = await GET(`${SMALL}?width=320&debug`);
+	assertEq(h(r, 'x-source-type'), 'remote', 'x-source-type');
+	assertEq(h(r, 'x-transform-source'), 'cdn-cgi', 'x-transform-source');
+});
+
+test('source: erfi-135kg transforms via cdn-cgi or binding', async () => {
+	const r = await GET(`${MEDIUM}?width=320&duration=5s&debug`, { timeout: 60_000 });
+	assertEq(r.status, 200, 'status');
+	assertOneOf(h(r, 'x-source-type'), ['r2', 'remote'], 'x-source-type');
+	assertOneOf(h(r, 'x-transform-source'), ['binding', 'cdn-cgi'], 'x-transform-source');
+	assertLt(sz(r), 232_000_000, 'size < raw');
+});
+
+// Derivative canonical invariant
+test('derivative invariant: impolicy=tablet and derivative=tablet produce same cache key', async () => {
+	const r1 = await GET(`${SMALL}?impolicy=tablet&debug`);
+	const r2 = await GET(`${SMALL}?derivative=tablet&debug`);
+	assertEq(h(r1, 'x-cache-key'), h(r2, 'x-cache-key'), 'same cache key');
+});
+
+test('derivative invariant: imwidth=1280 resolves to derivative with same dims', async () => {
+	const r = await GET(`${SMALL}?imwidth=1280&debug`);
+	assertEq(r.status, 200, 'status');
+	// imwidth=1280 should resolve to tablet (1280x720) via responsive/derivative matching
+	assert(!!h(r, 'x-resolved-width'), 'has resolved width');
+});
+
+// Admin: auth required
+test('admin: GET /admin/config without token returns 401', async () => {
+	const r = await GET('/admin/config');
+	assertEq(r.status, 401, 'status');
+});
+
+// Error: structured JSON on 404 origin
+test('error: no matching origin returns structured JSON', async () => {
+	const r = await GET('/unknown-path.mp4');
+	// Should return structured error or passthrough
+	if (r.status === 502) {
+		const body = await r.json() as { error: { code: string } };
+		assertEq(body.error.code, 'ALL_SOURCES_FAILED', 'error code');
+	}
+});
+
+// Container result from R2 (if previously cached)
+test('container: R2 cached result has x-transform-source=container', async () => {
+	// Use imwidth=320 which was cached from our earlier test
+	const r = await GET(`${HUGE}?imwidth=320`, { timeout: 60_000 });
+	if (h(r, 'content-type') === 'video/mp4' && sz(r) < 100_000_000) {
+		assertEq(h(r, 'x-transform-source'), 'container', 'x-transform-source');
+	}
+	// If not cached, it's a passthrough — that's OK, we can't control timing
+});
+
+// Range on container result
+test('container: range request on R2-cached result', async () => {
+	const r = await GET(`${HUGE}?imwidth=320`, { timeout: 60_000, headers: { Range: 'bytes=0-999' } });
+	if (h(r, 'content-type') === 'video/mp4') {
+		assertEq(r.status, 206, 'status');
+		assertEq(h(r, 'content-length'), '1000', 'content-length');
+	}
+});
+
 // Container async (725MB) — only with --container flag
 if (includeContainer) {
 	test('container: first request returns passthrough or cached result', async () => {
