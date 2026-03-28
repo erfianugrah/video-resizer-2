@@ -172,20 +172,17 @@ export class FFmpegContainer extends Container {
 		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
 		const r2Key = `_transformed/${cacheKey}`;
 		if (r2) {
+			const r2Metadata = {
+				httpMetadata: { contentType },
+				customMetadata: { transformSource: 'container', sourceType: 'container', cacheUrl, cacheKey },
+			};
 			if (contentLength) {
 				const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));
 				body.pipeTo(fixedStream.writable);
-				await r2.put(r2Key, fixedStream.readable, {
-					httpMetadata: { contentType },
-					customMetadata: { cacheUrl, cacheKey },
-				});
+				await r2.put(r2Key, fixedStream.readable, r2Metadata);
 			} else {
-				// Shouldn't happen — but handle gracefully
 				const bodyBytes = await new Response(body).arrayBuffer();
-				await r2.put(r2Key, bodyBytes, {
-					httpMetadata: { contentType },
-					customMetadata: { cacheUrl, cacheKey },
-				});
+				await r2.put(r2Key, bodyBytes, r2Metadata);
 			}
 		}
 

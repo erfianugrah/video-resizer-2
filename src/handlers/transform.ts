@@ -162,6 +162,7 @@ export async function transformHandler(c: HonoContext) {
 		rlog.info('R2 transform cache HIT', { r2Key: r2TransformKey, size: r2Result.size });
 		const ct = r2Result.httpMetadata?.contentType ?? 'video/mp4';
 		const transformSource = r2Result.customMetadata?.transformSource ?? 'unknown';
+		const storedSourceType = r2Result.customMetadata?.sourceType ?? 'unknown';
 
 		let maxAge = 86400;
 		const ttl = originMatch.origin.ttl;
@@ -175,6 +176,7 @@ export async function transformHandler(c: HonoContext) {
 		headers.set('Via', 'video-resizer');
 		headers.set('X-Request-ID', requestId);
 		headers.set('X-Transform-Source', transformSource);
+		headers.set('X-Source-Type', storedSourceType);
 		headers.set('X-Origin', originMatch.origin.name);
 		headers.set('X-Cache-Key', r2CacheKey);
 		headers.set('X-R2-Cache', 'HIT');
@@ -587,7 +589,11 @@ export async function transformHandler(c: HonoContext) {
 				transformed.body.pipeTo(fixedStream.writable);
 				await c.env.VIDEOS.put(r2StoreKey, fixedStream.readable, {
 					httpMetadata: { contentType: ct },
-					customMetadata: { transformSource: sourceType === 'r2' ? 'binding' : 'cdn-cgi', cacheKey },
+					customMetadata: {
+						transformSource: sourceType === 'r2' ? 'binding' : 'cdn-cgi',
+						sourceType,
+						cacheKey,
+					},
 				});
 			} else {
 				// No Content-Length — can't stream to R2, skip persistent store
