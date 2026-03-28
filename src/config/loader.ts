@@ -92,6 +92,18 @@ export async function loadConfig(kv: KVNamespace | undefined): Promise<AppConfig
 			configInput.passthrough = (kvConfig.video as Record<string, unknown>).passthrough;
 		}
 
+		// Container
+		if (kvConfig.container) {
+			configInput.container = kvConfig.container;
+		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).container) {
+			configInput.container = (kvConfig.video as Record<string, unknown>).container;
+		}
+
+		// Version
+		if (kvConfig.version) {
+			configInput.version = kvConfig.version;
+		}
+
 		const result = AppConfigSchema.safeParse(configInput);
 		if (result.success) {
 			cachedConfig = result.data;

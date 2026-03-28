@@ -16,9 +16,22 @@
 		{ "binding": "CONFIG", "id": "96e2e31372ac424699539b1bca50b18f" },
 		{ "binding": "CACHE_VERSIONS", "id": "548a5f4f87824d758542ace666293216" },
 	],
+	"d1_databases": [
+		{ "binding": "ANALYTICS", "database_name": "video-resizer-analytics", "database_id": "69625b4d-21b1-40f0-a370-be81c12c5fb5" },
+	],
+	"triggers": {
+		"crons": ["0 0 * * sun"],
+	},
+	"containers": [
+		{ "class_name": "FFmpegContainer", "image": "./container/Dockerfile", "max_instances": 5, "instance_type": "standard-1" },
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "FFMPEG_CONTAINER", "class_name": "FFmpegContainer" }],
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["FFmpegContainer"] }],
 	"routes": [
 		{
-			"pattern": "cdn.erfi.dev",
+			"pattern": "videos.erfi.io",
 			"custom_domain": true,
 		},
 	],

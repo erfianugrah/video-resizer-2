@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseParams, translateAkamaiParams, needsContainer, type TransformParams } from '../../src/params/schema';
+import { parseParams, translateAkamaiParams, needsContainer, parseImRef, type TransformParams } from '../../src/params/schema';
 
 describe('params/schema', () => {
 	describe('parseParams', () => {
@@ -244,6 +244,53 @@ describe('params/schema', () => {
 			expect(needsContainer({ format: 'png' })).toBe(false);
 			expect(needsContainer({ format: 'm4a' })).toBe(false);
 			expect(needsContainer({ format: 'mp4' })).toBe(false);
+		});
+
+		it('returns true for duration > 60s', () => {
+			expect(needsContainer({ duration: '90s' })).toBe(true);
+			expect(needsContainer({ duration: '2m' })).toBe(true);
+			expect(needsContainer({ duration: '1m30s' })).toBe(true);
+		});
+
+		it('returns false for duration <= 60s', () => {
+			expect(needsContainer({ duration: '60s' })).toBe(false);
+			expect(needsContainer({ duration: '30s' })).toBe(false);
+			expect(needsContainer({ duration: '1m' })).toBe(false);
+		});
+	});
+
+	describe('parseImRef', () => {
+		it('parses key=value,key=value format', () => {
+			const result = parseImRef('policy=mobile,width=1080,format=h264');
+			expect(result).toEqual({ policy: 'mobile', width: '1080', format: 'h264' });
+		});
+
+		it('returns empty object for empty string', () => {
+			expect(parseImRef('')).toEqual({});
+		});
+
+		it('handles single key=value pair', () => {
+			expect(parseImRef('key=value')).toEqual({ key: 'value' });
+		});
+
+		it('skips malformed entries without =', () => {
+			const result = parseImRef('good=val,bad,also=ok');
+			expect(result).toEqual({ good: 'val', also: 'ok' });
+		});
+	});
+
+	describe('translateAkamaiParams imref', () => {
+		it('consumes imref and returns parsed record', () => {
+			const qs = new URLSearchParams('imref=policy=tablet,width=1080&imwidth=1080');
+			const result = translateAkamaiParams(qs);
+			expect(result.imref).toEqual({ policy: 'tablet', width: '1080' });
+			expect(result.params.has('imref')).toBe(false); // consumed, not forwarded
+		});
+
+		it('returns empty imref when not present', () => {
+			const qs = new URLSearchParams('width=640');
+			const result = translateAkamaiParams(qs);
+			expect(result.imref).toEqual({});
 		});
 	});
 });

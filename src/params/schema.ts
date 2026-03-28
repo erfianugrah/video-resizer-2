@@ -45,7 +45,25 @@ const AKAMAI_INVERTED: Record<string, { target: string; invert: boolean }> = {
 };
 
 /** Akamai params consumed during processing but not passed through. */
-const AKAMAI_CONSUMED = new Set(['imref', 'im-viewwidth', 'im-viewheight', 'im-density']);
+const AKAMAI_CONSUMED = new Set(['im-viewwidth', 'im-viewheight', 'im-density']);
+
+/**
+ * Parse `imref` value (`key=value,key=value` format) into a record.
+ * Used for derivative matching context in Akamai IMQuery.
+ * v1 parsed this but never used the result for derivative selection
+ * (only imwidth/imheight affect matching). Kept for parity and logging.
+ */
+export function parseImRef(imref: string): Record<string, string> {
+	const result: Record<string, string> = {};
+	if (!imref) return result;
+	for (const param of imref.split(',')) {
+		const eq = param.indexOf('=');
+		if (eq > 0) {
+			result[param.slice(0, eq)] = param.slice(eq + 1);
+		}
+	}
+	return result;
+}
 
 /**
  * Akamai imformat values that require container fallback (not native binding).
@@ -135,10 +153,12 @@ export type TransformParams = z.infer<typeof TransformParamsSchema>;
 export function translateAkamaiParams(qs: URLSearchParams): {
 	params: URLSearchParams;
 	clientHints: Record<string, string>;
+	imref: Record<string, string>;
 } {
 	const out = new URLSearchParams();
 	const translated = new Map<string, string>();
 	const clientHints: Record<string, string> = {};
+	let imref: Record<string, string> = {};
 
 	for (const [key, value] of qs) {
 		// Client hint injection params — consumed, not forwarded
@@ -152,6 +172,10 @@ export function translateAkamaiParams(qs: URLSearchParams): {
 		}
 		if (key === 'im-density') {
 			clientHints['Sec-CH-DPR'] = value;
+			continue;
+		}
+		if (key === 'imref') {
+			imref = parseImRef(value);
 			continue;
 		}
 		if (AKAMAI_CONSUMED.has(key)) {
@@ -191,7 +215,7 @@ export function translateAkamaiParams(qs: URLSearchParams): {
 		}
 	}
 
-	return { params: out, clientHints };
+	return { params: out, clientHints, imref };
 }
 
 /**
@@ -222,7 +246,22 @@ export function needsContainer(params: TransformParams): boolean {
 	if (params.crop != null) return true;
 	if (params.bitrate != null) return true;
 	if (params.format && CONTAINER_CODEC_FORMATS.has(params.format)) return true;
-	// Duration > 60s check would need parsing the duration string
-	// That's done in the transform router where we have the parsed value
+	// Duration > 60s exceeds the Media binding cap
+	if (params.duration && parseDurationSeconds(params.duration) > 60) return true;
 	return false;
+}
+
+/** Parse a duration string like "5s", "2m", "1m30s" into total seconds. */
+function parseDurationSeconds(duration: string): number {
+	let total = 0;
+	const minMatch = duration.match(/(\d+(?:\.\d+)?)m/);
+	const secMatch = duration.match(/(\d+(?:\.\d+)?)s/);
+	if (minMatch) total += parseFloat(minMatch[1]) * 60;
+	if (secMatch) total += parseFloat(secMatch[1]);
+	// If only a bare number, treat as seconds
+	if (!minMatch && !secMatch) {
+		const n = parseFloat(duration);
+		if (Number.isFinite(n)) total = n;
+	}
+	return total;
 }

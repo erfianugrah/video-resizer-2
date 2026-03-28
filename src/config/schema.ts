@@ -114,6 +114,27 @@ const PassthroughSchema = z.object({
 	formats: z.array(z.string()),
 });
 
+// ── Container ────────────────────────────────────────────────────────────
+
+const ContainerQualityPresetSchema = z.object({
+	crf: z.number().int().min(0).max(51),
+	preset: z.string(),
+});
+
+const ContainerSchema = z.object({
+	enabled: z.boolean().default(false),
+	maxInputSize: z.number().positive().default(6 * 1024 * 1024 * 1024), // 6 GiB
+	maxOutputForCache: z.number().positive().default(2 * 1024 * 1024 * 1024), // 2 GiB
+	timeoutMs: z.number().positive().default(600_000), // 10 min
+	quality: z.record(z.string(), ContainerQualityPresetSchema).default({
+		low: { crf: 28, preset: 'fast' },
+		medium: { crf: 23, preset: 'medium' },
+		high: { crf: 18, preset: 'medium' },
+	}),
+	sleepAfter: z.string().default('5m'),
+	maxInstances: z.number().int().positive().default(5),
+});
+
 // ── Top-level config ─────────────────────────────────────────────────────
 
 export const AppConfigSchema = z.object({
@@ -122,6 +143,7 @@ export const AppConfigSchema = z.object({
 	derivatives: z.record(z.string(), DerivativeSchema).default({}),
 	responsive: ResponsiveSchema.optional(),
 	passthrough: PassthroughSchema.default({ enabled: true, formats: ['mp4', 'webm', 'mov'] }),
+	container: ContainerSchema.optional(),
 });
 
 /** Validated application config. Immutable after parse. */

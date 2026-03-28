@@ -72,4 +72,35 @@ describe('cache/key', () => {
 		const key = buildCacheKey('/my videos/test file.mp4', params);
 		expect(key).toMatch(/^video:my-videos\/test-file\.mp4:w=640$/);
 	});
+
+	it('appends etag prefix when provided', () => {
+		const params: TransformParams = { width: 640 };
+		const key = buildCacheKey('/test.mp4', params, undefined, 'abcdef1234567890');
+		expect(key).toBe('video:test.mp4:w=640:e=abcdef12');
+	});
+
+	it('different etags produce different keys', () => {
+		const params: TransformParams = { width: 640 };
+		const key1 = buildCacheKey('/test.mp4', params, undefined, 'aaaa1111');
+		const key2 = buildCacheKey('/test.mp4', params, undefined, 'bbbb2222');
+		expect(key1).not.toBe(key2);
+	});
+
+	it('includes both etag and version when provided', () => {
+		const params: TransformParams = { width: 640 };
+		const key = buildCacheKey('/test.mp4', params, 5, 'abcdef12');
+		expect(key).toBe('video:test.mp4:w=640:e=abcdef12:v=5');
+	});
+
+	it('includes imageCount in spritesheet cache key', () => {
+		const params: TransformParams = { mode: 'spritesheet', width: 640, time: '0s', duration: '10s', imageCount: 5 };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toBe('spritesheet:test.mp4:w=640:t=0s:d=10s:ic=5');
+	});
+
+	it('different imageCount produces different spritesheet cache keys', () => {
+		const params5: TransformParams = { mode: 'spritesheet', width: 640, imageCount: 5 };
+		const params10: TransformParams = { mode: 'spritesheet', width: 640, imageCount: 10 };
+		expect(buildCacheKey('/test.mp4', params5)).not.toBe(buildCacheKey('/test.mp4', params10));
+	});
 });

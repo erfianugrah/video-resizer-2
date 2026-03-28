@@ -807,28 +807,45 @@ function log(level: string, msg: string, data?: Record<string, unknown>) {
 
 ## Debug UI
 
-Astro + React dashboard built to `debug-ui/dist/`, served via ASSETS binding.
-`?debug=view` -> worker injects `window.DIAGNOSTICS_DATA` into debug.html.
-Shows: stat cards, transform params, cache status, config, media preview, raw JSON.
+`?debug=view` returns a JSON diagnostics response (no full Astro dashboard yet):
 
-Debug headers on every response when debug enabled:
+```json
+{
+  "diagnostics": {
+    "requestId": "uuid",
+    "path": "/rocky.mp4",
+    "params": { "derivative": "tablet", "width": 1280, "height": 720 },
+    "origin": { "name": "standard", "sources": [...], "ttl": {...} },
+    "captures": { "videoId": "rocky", "extension": "mp4" },
+    "config": { "derivatives": ["desktop","tablet","mobile","thumbnail"], ... },
+    "needsContainer": false,
+    "resolvedWidth": 1280,
+    "resolvedHeight": 720
+  }
+}
+```
 
-- `X-Request-ID`, `X-Processing-Time-Ms`
-- `X-Transform-Source` (binding/container/passthrough)
-- `X-Cache-Status` (HIT/MISS/BYPASS)
-- `X-Origin-Name`, `X-Source-Type`
+Debug headers on every response:
+
+- `X-Request-ID` — unique UUID per request
+- `X-Processing-Time-Ms` — total transform time
+- `X-Transform-Source` — `binding` or `cdn-cgi`
+- `X-Origin`, `X-Source-Type`, `X-Source-Etag`
 - `X-Derivative`, `X-Resolved-Width`, `X-Resolved-Height`
+- `X-Cache-Key` — deterministic cache key
+- `cf-cache-status` — set by Cloudflare edge (HIT/MISS/DYNAMIC)
 
 ## Build / Lint / Test
 
-| Command              | Purpose                           |
-| -------------------- | --------------------------------- |
-| `npm run dev`        | Local dev (`wrangler dev`)        |
-| `npm run deploy`     | Deploy to Cloudflare              |
-| `npm test`           | Vitest                            |
-| `npm run test:run`   | Vitest single run                 |
-| `npm run check`      | TypeScript type check             |
-| `npx wrangler types` | Regen types after binding changes |
+| Command              | Purpose                                        |
+| -------------------- | ---------------------------------------------- |
+| `npm run dev`        | Local dev (`wrangler dev`)                     |
+| `npm run deploy`     | Deploy to Cloudflare                           |
+| `npm test`           | Vitest (watch mode)                            |
+| `npm run test:run`   | Vitest single run (142 unit tests)             |
+| `npm run test:e2e`   | E2E tests against live `videos.erfi.io` (46)   |
+| `npm run check`      | TypeScript type check                          |
+| `npx wrangler types` | Regen types after binding changes              |
 
 Single test: `npx vitest run test/path.spec.ts`
 By name: `npx vitest run -t "pattern"`
@@ -839,12 +856,12 @@ By name: `npx vitest run -t "pattern"`
 **TypeScript**: strict, ES2022, Bundler resolution, no emit.
 **Naming**: camelCase files, PascalCase classes/types (no prefix), UPPER_SNAKE constants.
 **Imports**: local first, then external. Named exports. `index.ts` barrels.
-**Testing**: Vitest + `@cloudflare/vitest-pool-workers`. `*.spec.ts` in `test/`.
+**Testing**: Vitest + `@cloudflare/vitest-pool-workers` for unit, plain Vitest for E2E.
 **Docs**: JSDoc on exports. Inline comments explain "why".
 
 ## Dependencies
 
-Production: `hono`, `zod` (v4), `aws4fetch`. Three deps.
+Production: `hono`, `zod` (v4), `aws4fetch`, `@cloudflare/containers`. Four deps.
 
 ## Bindings (wrangler.jsonc)
 
@@ -856,12 +873,18 @@ Production: `hono`, `zod` (v4), `aws4fetch`. Three deps.
 		{ "binding": "CONFIG", "id": "96e2e31372ac424699539b1bca50b18f" },
 		{ "binding": "CACHE_VERSIONS", "id": "548a5f4f87824d758542ace666293216" },
 	],
-	// Not yet created:
-	// "d1_databases": [{ "binding": "ANALYTICS", "database_name": "video-resizer-analytics", "database_id": "..." }],
-	// "assets": { "directory": "./debug-ui/dist", "binding": "ASSETS" },
+	"d1_databases": [
+		{ "binding": "ANALYTICS", "database_name": "video-resizer-analytics", "database_id": "69625b4d-21b1-40f0-a370-be81c12c5fb5" },
+	],
+	"containers": [
+		{ "class_name": "FFmpegContainer", "image": "./container/Dockerfile", "max_instances": 5, "instance_type": "standard-1" },
+	],
+	"durable_objects": {
+		"bindings": [{ "name": "FFMPEG_CONTAINER", "class_name": "FFmpegContainer" }],
+	},
 	"observability": { "enabled": true },
-	"routes": [{ "pattern": "cdn.erfi.dev", "custom_domain": true }],
-	// "triggers": { "crons": ["0 0 * * 0"] }  // Add when D1 analytics is wired
+	"triggers": { "crons": ["0 0 * * sun"] },
+	"routes": [{ "pattern": "videos.erfi.io", "custom_domain": true }],
 }
 ```
 
@@ -869,135 +892,226 @@ Run `npx wrangler types` after any binding change.
 
 ## Current state (2026-03-27)
 
-### What's deployed and working on cdn.erfi.dev
+### Deployed on videos.erfi.io
 
-The full transform pipeline is live. Requests go through:
-`via check → config (KV) → passthrough → Akamai translation → param parse →
-derivative resolve → responsive sizing → origin match → cache lookup →
-source fetch (R2/remote) → env.MEDIA transform → tee body → client + cache.put`
+Full three-tier transform pipeline live:
+`via check → cdn-cgi passthrough → config (KV) → admin/internal routes →
+non-video passthrough → Akamai translation → param parse → derivative resolve →
+responsive sizing → origin match → debug=view diagnostics → cache lookup →
+request coalescing → source resolution → transform (binding/cdn-cgi/container) →
+response headers → tee body → client + cache.put + D1 analytics`
 
-**Live test results:**
+**Three-tier transform routing:**
+- R2 sources (≤100MB) → `env.MEDIA.input(stream)` binding
+- Remote sources (≤256MB) → `cdn-cgi/media` URL (edge transform, zero Worker memory)
+- Oversized (>256MB) or container-only params → FFmpeg container DO
+- Source fallback chain: if one tier fails, falls through to next source
 
-- `rocky.mp4?derivative=tablet` → 5.2MB (1280x720), ~9s from 40MB source
-- `rocky.mp4?derivative=mobile` → 2.5MB (854x640), ~8s
-- `rocky.mp4?derivative=desktop` → 1920x1080, ~10s
-- `rocky.mp4?derivative=thumbnail` → 472KB PNG frame, ~2.5s
-- `rocky.mp4?imwidth=1080` → Akamai translation working
+**Cache working on `videos.erfi.io`:**
+- `caches.default` with `body.tee()` (memory-safe at 128MB limit)
+- `cf-cache-status: HIT` on second request (~0.1s vs ~9s)
+- Range requests → 206 Partial Content with Content-Range
+- Cache-Tag for purge-by-tag via Cloudflare API
+- R2 etag in cache key (automatic busting), KV version for remote (manual busting)
 
-### BLOCKING BUG: Cache API not hitting
+**Note:** Cache did NOT work on `cdn.erfi.dev` — zone-level Bot Management or cache
+rules were silently preventing `caches.default` from storing. Switched to `videos.erfi.io`.
 
-`cache.put()` succeeds (confirmed in logs: "cache.put OK"). But subsequent
-`cache.match()` with the same URL returns undefined. Every request re-transforms.
+### Live test results
 
-**What was tried:**
+```
+rocky.mp4?derivative=tablet    → MISS 9s, HIT 0.1s (1280x720 video)
+rocky.mp4?derivative=thumbnail → MISS 2.5s, HIT 0.1s (640x360 PNG frame)
+rocky.mp4?impolicy=mobile      → Akamai translation → 854x640 video
+erfi-135kg.mp4?derivative=thumbnail → 232MB source, frame in 11s via R2 binding
+erfi-135kg.mp4?width=320&duration=5s → 232MB, 5s clip in 20s via R2 binding
+big_buck_bunny_1080p.mov       → 725MB, async container (passthrough in 285ms + bg job)
+Range: bytes=0-999             → 206, content-range: bytes 0-999/5216059
+```
 
-1. `cache.match(c.req.raw)` / `cache.put(c.req.raw, response.clone())` — the CF
-   example pattern. Didn't work, possibly because Hono locks the request body stream.
-2. `new Request(url, request)` for match, `new Request(url, {method:'GET'})` for put —
-   different Request objects, same URL. Didn't work.
-3. Clean Request from URL string with only Range/If-None-Match headers for match,
-   clean GET for put. Still no hit.
-4. `.tee()` body for cache.put vs `.clone()` — both tried. `.clone()` would blow
-   memory for large outputs so `.tee()` is correct, but neither approach hits cache.
+### Bindings (production)
 
-**Next steps to debug:**
-
-- Write a minimal Worker (no Hono) that does ONLY `cache.put` then `cache.match`
-  to isolate whether it's a Hono issue or a Cache API misunderstanding.
-- Check if `cache.put` with a `tee()`'d ReadableStream actually works — the CF docs
-  note that "chunked response bodies block subsequent .put() calls until complete",
-  which may mean the tee'd stream needs to fully drain before the entry is available.
-- Check if the custom domain setup is correct for Cache API (docs say custom domains
-  work, \*.workers.dev doesn't).
-- Try using `fetch()` with `cf: { cacheEverything: true, cacheTtl: 86400 }` as an
-  alternative caching strategy — this uses the CDN cache (not Cache API) and supports
-  tiered caching.
-- Check if `Vary` header on the Media binding response is causing cache key mismatch.
-
-### KV namespaces (production)
-
-| Binding          | ID                                 | Purpose                                    |
-| ---------------- | ---------------------------------- | ------------------------------------------ |
-| `CONFIG`         | `96e2e31372ac424699539b1bca50b18f` | Worker config (origins, derivatives, etc.) |
-| `CACHE_VERSIONS` | `548a5f4f87824d758542ace666293216` | Cache version registry                     |
-
-Config is seeded at key `worker-config` from `config/worker-config.json`.
-
-### R2 bucket
-
-| Binding  | Bucket   | Contents                                                                         |
-| -------- | -------- | -------------------------------------------------------------------------------- |
-| `VIDEOS` | `videos` | `big_buck_bunny_1080p.mov` (725MB), `erfi-135kg.mp4` (232MB), `rocky.mp4` (40MB) |
-
-Use `rclone ls erfi:videos/` to list. `big_buck_bunny` exceeds the Media binding's
-100MB input limit — needs FFmpeg container route (not yet implemented).
+| Binding            | Type          | Resource                              |
+| ------------------ | ------------- | ------------------------------------- |
+| `MEDIA`            | Media         | Media Transformations binding         |
+| `VIDEOS`           | R2 Bucket     | `videos` (725MB + 232MB + 40MB)      |
+| `CONFIG`           | KV            | `96e2e31372ac424699539b1bca50b18f`    |
+| `CACHE_VERSIONS`   | KV            | `548a5f4f87824d758542ace666293216`    |
+| `ANALYTICS`        | D1            | `video-resizer-analytics`             |
+| `FFMPEG_CONTAINER` | Durable Object| FFmpegContainer (container DO)        |
+| `CONFIG_API_TOKEN` | Secret        | Bearer token for admin endpoints      |
 
 ### Test commands
 
 ```bash
 # Live transform
-curl -sI "https://cdn.erfi.dev/rocky.mp4?derivative=tablet"
+curl -s "https://videos.erfi.io/rocky.mp4?derivative=tablet" -o /dev/null -w "%{http_code} %{time_total}s\n"
+
+# Debug diagnostics
+curl -s "https://videos.erfi.io/rocky.mp4?derivative=tablet&debug=view" | jq .
+
+# Cache bust
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"path":"/rocky.mp4"}' "https://videos.erfi.io/admin/cache/bust"
+
+# Analytics
+curl -s -H "Authorization: Bearer $TOKEN" "https://videos.erfi.io/admin/analytics?hours=24" | jq .
 
 # Tail logs
 npx wrangler tail --format json
 
 # Run tests
-npx vitest run
+npm run test:run    # 142 unit tests
+npm run test:e2e    # 46 E2E tests (live HTTP)
 
 # Deploy
 npx wrangler deploy
 
 # Check R2 contents
 rclone ls erfi:videos/
-
-# Read KV config
-npx wrangler kv key get --namespace-id="96e2e31372ac424699539b1bca50b18f" "worker-config" --remote
-
-# Upload new config
-npx wrangler kv key put --namespace-id="96e2e31372ac424699539b1bca50b18f" "worker-config" --path=config/worker-config.json --remote
 ```
 
 ---
 
 ## Implementation progress
 
-### Completed (121 tests, all passing)
+### Completed (142 unit tests + 46 E2E tests, all passing)
 
+**Core pipeline:**
+- [x] `src/index.ts` — Hono app, full middleware pipeline, three-tier transform routing
 - [x] `src/errors.ts` — AppError class (6 tests)
-- [x] `src/config/schema.ts` — Full Zod 4 config schema (10 tests)
-- [x] `src/config/loader.ts` — KV config loader with in-memory cache + v1 compat
-- [x] `src/params/schema.ts` — Canonical params + full Akamai/IMQuery translation + `needsContainer()` (37 tests)
+- [x] `src/log.ts` — Structured JSON logging for Workers Logs
+- [x] `src/types.ts` — Env bindings interface (MEDIA, VIDEOS, CONFIG, ANALYTICS, FFMPEG_CONTAINER)
+
+**Config:**
+- [x] `src/config/schema.ts` — Zod 4 schema: origins, derivatives, responsive, passthrough, container (10 tests)
+- [x] `src/config/loader.ts` — KV hot-reload, 5-min TTL, v1 nested format compat
+
+**Params:**
+- [x] `src/params/schema.ts` — All canonical params, Akamai/IMQuery translation, `needsContainer()`, `parseImRef()` (44 tests)
 - [x] `src/params/derivatives.ts` — Derivative resolution, canonical dims invariant (6 tests)
 - [x] `src/params/responsive.ts` — Client Hints / CF-Device-Type auto-sizing (11 tests)
-- [x] `src/cache/key.ts` — Deterministic cache key from resolved params (11 tests)
-- [x] `src/cache/store.ts` — Cache API wrapper (cache.match / cache.put)
-- [x] `src/cache/coalesce.ts` — BoundedLRU request dedup (5 tests)
+
+**Sources:**
+- [x] `src/sources/router.ts` — Origin matching, capture groups, source path resolution (8 tests)
 - [x] `src/sources/auth.ts` — AWS S3 (aws4fetch), bearer, header auth (6 tests)
-- [x] `src/sources/router.ts` — Origin matching + capture groups + source path resolution (8 tests)
-- [x] `src/sources/fetch.ts` — R2 + remote source fetching with priority fallback
-- [x] `src/transform/binding.ts` — env.MEDIA pipeline (input → transform → output)
-- [x] `src/log.ts` — Structured logging (console.log JSON for Workers Logs)
-- [x] `src/types.ts` — Env bindings interface
-- [x] `src/index.ts` — Full Hono app with middleware pipeline + scheduled handler
-- [x] `test/integration/pipeline.spec.ts` — End-to-end pipeline tests (22 tests)
-- [x] `config/worker-config.json` — Production config with 5 origins, 4 derivatives
-- [x] `wrangler.jsonc` — Deployed to cdn.erfi.dev (custom domain)
+- [x] `src/sources/fetch.ts` — Two-tier source resolution (R2 stream / remote URL)
+- [x] `src/sources/presigned.ts` — S3 presigned URL generation + KV caching
 
-### Blocking
+**Transform:**
+- [x] `src/transform/binding.ts` — env.MEDIA pipeline with MediaError catch (both `code` property and message pattern)
+- [x] `src/transform/cdncgi.ts` — cdn-cgi/media URL construction + fetch with version busting
+- [x] `src/transform/container.ts` — FFmpegContainer DO class + sync/async transform client
+- [x] `container/Dockerfile` — node:22-slim + ffmpeg
+- [x] `container/server.mjs` — HTTP server: /transform (sync), /transform-async (callback), /health
 
-- [ ] **Fix Cache API hit/miss** — cache.put succeeds but cache.match returns undefined (see debugging notes above)
+**Cache:**
+- [x] `src/cache/key.ts` — Deterministic key with etag, version, imageCount (16 tests)
+- [x] `src/cache/store.ts` — caches.default helpers (match/put/delete)
+- [x] `src/cache/version.ts` — KV-backed get/bump/set/delete (8 tests)
+- [x] `src/cache/coalesce.ts` — BoundedLRU request dedup (5 tests)
 
-### Next (after cache fix)
+**Analytics:**
+- [x] `src/analytics/middleware.ts` — D1 insert via waitUntil (cache hits + transform completions + errors)
+- [x] `src/analytics/queries.ts` — Summary aggregation (totals, hit rate, p50/p95, by status/origin/derivative/source)
+- [x] `src/analytics/schema.sql` — D1 table DDL
 
-- [ ] `src/transform/container.ts` — FFmpeg container DO for oversized/advanced params
-- [ ] `src/sources/presigned.ts` — AWS presigned URL generation + KV caching
-- [ ] `src/cache/version.ts` — KV-backed version get/put for cache busting
-- [ ] Request coalescing integration into index.ts (module exists, not wired in)
-- [ ] `src/admin/config.ts` — POST /admin/config endpoint
-- [ ] `src/analytics/middleware.ts` — D1 request logging (non-blocking via waitUntil)
-- [ ] `src/analytics/queries.ts` — Aggregation SQL for admin API
-- [ ] `src/admin/analytics.ts` — GET /admin/analytics endpoints
-- [ ] `src/debug/inject.ts` — Debug UI from ASSETS binding
-- [ ] Error recovery: duration retry, alternative source retry, container fallback
-- [ ] Content-type correction for audio mode (force audio/mp4)
-- [ ] Range request validation (once cache is working)
+**Admin:**
+- [x] `GET /admin/config` — retrieve config with auth
+- [x] `POST /admin/config` — upload config with Zod validation
+- [x] `POST /admin/cache/bust` — bump version for a path
+- [x] `GET /admin/analytics` — summary with `?hours=N`
+- [x] `GET /admin/analytics/errors` — recent errors with `?hours=N&limit=N`
+- [x] `POST /internal/container-result` — async container callback handler
+
+**Tests:**
+- [x] `test/` — 11 unit test files, 142 tests (Vitest + Workers pool)
+- [x] `test/e2e/live.spec.ts` — 46 E2E tests (Vitest + Node, live HTTP to videos.erfi.io)
+- [x] `vitest.config.ts` — Workers pool config (excludes E2E)
+- [x] `vitest.e2e.config.ts` — Node config for E2E (60s timeout)
+
+**Error recovery:**
+- [x] Duration limit retry (extract max from MediaError, re-fetch R2, retry)
+- [x] Alternative source retry (for-loop over sorted sources with fallback)
+- [x] Container fallback (reactive: binding fails → container; proactive: size > 100MB → container)
+- [x] Raw passthrough as last resort (serve untransformed source)
+- [x] Raw passthrough detection (cdn-cgi returns raw source when transforms not enabled)
+
+**Container async (725MB+ files):**
+- [x] URL-based async endpoint (`/transform-url`) — container fetches source directly
+- [x] Worker returns immediate passthrough (285ms, `X-Transform-Pending: true`)
+- [x] Passthrough responses NOT cached (prevents stale raw source in cache)
+- [x] Callback URL includes original request URL for correct cache key placement
+- [x] Container accepts jobs (202), starts downloading + ffmpeg in background
+
+**Logging:**
+- [x] Breadcrumb-style tracing — every log line includes `requestId` UUID
+- [x] Scoped `rlog` logger in transform handler, covers entire request lifecycle
+- [x] Error handler logs include `path` for correlation
+- [x] D1 analytics logs cache hits, transform completions, and error responses
+
+**Response processing:**
+- [x] Content-Type correction (audio/mp4, image/jpeg, image/png)
+- [x] Content-Disposition from filename param
+- [x] Cache-Control (per-origin TTL, status-aware)
+- [x] Cache-Tag (derivative, origin, mode, per-origin tags)
+- [x] Playback hint headers (X-Playback-Loop/Autoplay/Muted/Preload)
+- [x] Accept-Ranges: bytes
+- [x] Via: video-resizer (loop prevention)
+- [x] Set-Cookie and Vary: * stripping before cache.put
+
+### Remaining
+
+- [ ] **Container callback completion** — the async container accepts jobs (202) and
+      the Worker returns passthrough instantly. The container downloads the source and
+      runs ffmpeg, but the callback POST to `/internal/container-result` needs debugging:
+      - Container may need more time for 725MB downloads (verify with container logs)
+      - Callback URL may be intercepted by passthrough middleware (verify routing)
+      - Container `standard-1` instance may need more disk for large temp files
+      - The `/internal/container-result` handler stores to `caches.default` which requires
+        the cache URL to exactly match future `cache.match()` requests
+- [ ] **Debug UI frontend** — Astro+React dashboard from ASSETS binding.
+      `?debug=view` JSON diagnostics works as lightweight replacement.
+
+### Known flaws (to fix)
+
+**Container DO instance key collision:** All transforms of the same file share one
+DO instance (`ffmpeg:{origin}:{path}`). When multiple different transforms (frame vs
+video, different widths) hit the same file, the DO queues/replays old requests.
+Fix: include a hash of the transform params in the instance key so each unique
+transform gets its own DO instance. E.g. `ffmpeg:{origin}:{path}:{paramsHash}`.
+
+**Container video output not verified in cache:** Frame extraction (26KB JPEG) from
+big_buck_bunny was confirmed working end-to-end (container downloaded 725MB, extracted
+frame, POSTed to callback, cached, served from cache). But video transcoding output
+(which could be 50-200MB) has NOT been verified stored and served from Cache API with
+range requests. The concern: Cache API has a 512MB per-entry limit (should be fine),
+but the container needs enough disk to hold both the 725MB input and the output
+simultaneously, and the callback POST needs to transfer the full output through CF.
+
+**Passthrough caching race:** When the first request returns a raw passthrough
+(`X-Transform-Pending: true`), subsequent requests before the container finishes may
+also get passthrough. With `shouldCache` skip for pending responses, these don't cache
+the raw source. But the CDN edge cache (`cf-cache-status`) is separate from Worker
+`caches.default` — the CDN may cache the passthrough response independently. This
+means the CDN could serve stale passthrough even after the container result is cached
+in `caches.default`. The Worker's `cache.match()` runs before CDN serves, so it should
+find the container result — but CDN behavior at the edge is not fully controllable.
+
+**Container `standard-1` resource limits:** The `standard-1` instance type provides
+limited disk. Downloading a 725MB file + running ffmpeg (which creates temp files)
+may exceed available disk. If the container runs out of disk, ffmpeg fails silently
+and the callback either doesn't fire or sends an error. Consider `standard-2` or
+higher for production use with files > 500MB.
+
+**cdn-cgi/media allowed origins:** Media Transformations on erfi.io requires source
+origins to be whitelisted in the CF dashboard (Stream → Transformations → Sources).
+Currently `videos.erfi.dev` is added. Any new remote source domains need to be added
+manually or set to "any origin".
+
+### Done (previously remaining)
+
+- [x] **Enable Media Transformations on erfi.io zone** — enabled, cdn-cgi/media working.
+      `videos.erfi.dev` added to allowed origins. Remote sources (≤256MB) now transform
+      at the edge via cdn-cgi (zero Worker memory). Verified: rocky.mp4 frame in 0.27s,
+      tablet video in 6.5s, erfi-135kg 1280x720 30s clip in 15.6s — all via cdn-cgi.

@@ -73,13 +73,24 @@ export async function transformViaBinding(
 
 		return await result.response();
 	} catch (err: unknown) {
-		// MediaError has a numeric `code` property
-		if (err instanceof Error && 'code' in err) {
-			const code = (err as Error & { code: number }).code;
-			throw new AppError(502, `MEDIA_ERROR_${code}`, err.message, {
-				mediaErrorCode: code,
-				params: sanitizeParams(params),
-			});
+		if (err instanceof Error) {
+			// MediaError has a numeric `code` property
+			if ('code' in err) {
+				const code = (err as Error & { code: number }).code;
+				throw new AppError(502, `MEDIA_ERROR_${code}`, err.message, {
+					mediaErrorCode: code,
+					params: sanitizeParams(params),
+				});
+			}
+			// MEDIA_TRANSFORMATION_ERROR pattern: "MEDIA_TRANSFORMATION_ERROR {code}: {message}"
+			const mtMatch = err.message.match(/MEDIA_TRANSFORMATION_ERROR\s+(\d+)/);
+			if (mtMatch) {
+				const code = parseInt(mtMatch[1], 10);
+				throw new AppError(502, `MEDIA_ERROR_${code}`, err.message, {
+					mediaErrorCode: code,
+					params: sanitizeParams(params),
+				});
+			}
 		}
 		throw err;
 	}

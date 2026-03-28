@@ -16,9 +16,14 @@ import type { TransformParams } from '../params/schema';
 /**
  * Build a deterministic cache key from path and resolved transform params.
  *
- * Format: `{mode}:{path}[:w={width}][:h={height}][:...params][:v={version}]`
+ * Format: `{mode}:{path}[:w={width}][:h={height}][:...params][:e={etag}][:v={version}]`
+ *
+ * @param path Request path
+ * @param params Resolved transform params (derivative already applied)
+ * @param version KV-backed version number for manual cache busting (remote sources)
+ * @param etag R2 object etag for automatic cache busting (R2 sources)
  */
-export function buildCacheKey(path: string, params: TransformParams, version?: number): string {
+export function buildCacheKey(path: string, params: TransformParams, version?: number, etag?: string): string {
 	const normalizedPath = path.replace(/^\/+/, '');
 	const mode = params.mode ?? 'video';
 
@@ -37,6 +42,7 @@ export function buildCacheKey(path: string, params: TransformParams, version?: n
 		case 'spritesheet':
 			if (params.time) key += `:t=${params.time}`;
 			if (params.duration) key += `:d=${params.duration}`;
+			if (params.imageCount) key += `:ic=${params.imageCount}`;
 			break;
 		case 'audio':
 			if (params.time) key += `:t=${params.time}`;
@@ -49,7 +55,10 @@ export function buildCacheKey(path: string, params: TransformParams, version?: n
 			break;
 	}
 
-	// Cache version for busting
+	// R2 etag for automatic cache busting — short hash to keep key compact
+	if (etag) key += `:e=${etag.slice(0, 8)}`;
+
+	// KV version for manual cache busting (remote sources)
 	if (version && version > 1) key += `:v=${version}`;
 
 	// Sanitize: replace spaces and invalid chars, preserve slashes and structure
