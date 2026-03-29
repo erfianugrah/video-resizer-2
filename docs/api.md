@@ -131,10 +131,50 @@ Summary response:
 ### Jobs
 
 ```
-GET /admin/jobs?hours=24&limit=50       # List recent jobs
-GET /admin/jobs?active=true             # List active (non-terminal) jobs
-GET /admin/jobs?filter=bunny            # Text search on path/jobId/status
+GET  /admin/jobs?hours=24&limit=50       # List recent jobs
+GET  /admin/jobs?active=true             # List active (non-terminal) jobs
+GET  /admin/jobs?filter=bunny            # Text search on path/jobId/status
+POST /admin/jobs/retry                   # Retry/delete/clear stuck jobs
 ```
+
+#### Retry a single stuck job
+
+Resets D1 status to `pending`, cleans partial R2 result, re-enqueues to `TRANSFORM_QUEUE`.
+
+```bash
+curl -X POST https://your-domain.com/admin/jobs/retry \
+  -H "Authorization: Bearer {token}" \
+  -H "Content-Type: application/json" \
+  -d '{"jobId": "video:big_buck_bunny.mov:w=1440:c=auto"}'
+```
+
+Response: `{ "ok": true, "reset": true, "jobId": "...", "requeued": true }`
+
+#### Clear all stale jobs
+
+Resets all non-terminal jobs older than N minutes back to `pending`.
+
+```bash
+curl -X POST https://your-domain.com/admin/jobs/retry \
+  -H "Authorization: Bearer {token}" \
+  -H "Content-Type: application/json" \
+  -d '{"staleMinutes": 30}'
+```
+
+Response: `{ "ok": true, "resetCount": 3, "staleMinutes": 30 }`
+
+#### Delete a job
+
+Removes the job from D1 and cleans any partial R2 result.
+
+```bash
+curl -X POST https://your-domain.com/admin/jobs/retry \
+  -H "Authorization: Bearer {token}" \
+  -H "Content-Type: application/json" \
+  -d '{"jobId": "...", "delete": true}'
+```
+
+Response: `{ "ok": true, "deleted": true, "jobId": "..." }`
 
 Job response:
 ```json

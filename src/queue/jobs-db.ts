@@ -69,6 +69,35 @@ export function failJob(db: D1Database, jobId: string, error: string): void {
 		.catch((err) => log.error('Job fail update failed', { error: err instanceof Error ? err.message : String(err) }));
 }
 
+/**
+ * Reset a stuck job back to 'pending' so the queue consumer re-dispatches it.
+ * Also clears any partial R2 result so the container starts fresh.
+ */
+export async function retryJob(db: D1Database, jobId: string): Promise<boolean> {
+	const result = await db.prepare(
+		`UPDATE transform_jobs SET status = 'pending', percent = 0, error = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND status NOT IN ('complete')`,
+	).bind(jobId).run();
+	return (result.meta?.changes ?? 0) > 0;
+}
+
+/**
+ * Reset all non-terminal jobs older than `staleAfterMs` back to 'pending'.
+ * Returns the number of jobs reset.
+ */
+export async function resetStaleJobs(db: D1Database, staleAfterMs: number): Promise<number> {
+	const cutoff = Date.now() - staleAfterMs;
+	const result = await db.prepare(
+		`UPDATE transform_jobs SET status = 'pending', percent = 0, error = NULL, started_at = NULL WHERE status IN ('pending', 'downloading', 'transcoding', 'uploading') AND created_at < ?`,
+	).bind(cutoff).run();
+	return result.meta?.changes ?? 0;
+}
+
+/** Delete a job from D1 (e.g. to allow clean re-enqueue). */
+export async function deleteJob(db: D1Database, jobId: string): Promise<boolean> {
+	const result = await db.prepare('DELETE FROM transform_jobs WHERE job_id = ?').bind(jobId).run();
+	return (result.meta?.changes ?? 0) > 0;
+}
+
 // ── Read operations ──────────────────────────────────────────────────
 
 export interface JobRow {

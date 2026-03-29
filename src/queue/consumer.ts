@@ -26,6 +26,16 @@ import { buildContainerInstanceKey } from '../transform/container';
 import { updateJobStatus, completeJob, failJob } from '../queue/jobs-db';
 import * as log from '../log';
 
+/**
+ * Compute retry delay with exponential backoff.
+ * Attempt 1 → 120s, 2 → 240s, 3 → 480s, capped at 900s (15min).
+ * Large transcodes (700MB 1080p→1440p) can take 10-20min — a flat 120s
+ * retry caused 5-10 concurrent ffmpeg processes that stalled the container.
+ */
+function retryDelay(attempt: number): number {
+	return Math.min(120 * Math.pow(2, attempt - 1), 900);
+}
+
 function toCallbackUrl(zoneHost: string, path: string): string {
 	return `http://${zoneHost}${path}`;
 }
@@ -92,26 +102,29 @@ export async function handleQueue(
 			});
 
 			if (resp.status === 202 || resp.ok) {
-				// Container accepted. Retry in 120s to check R2 for result.
-				// Container needs: download (~30-120s) + ffmpeg (~60-300s) + R2 put (~5s).
-				message.retry({ delaySeconds: 120 });
-				log.info('Queue: dispatched, will check R2 in 120s', {
+				// Container accepted. Retry with backoff to check R2 for result.
+				// Container needs: download (~30-120s) + ffmpeg (~60-1200s) + R2 put (~5s).
+				// Backoff avoids re-dispatching to a container already transcoding.
+				const delay = retryDelay(message.attempts);
+				message.retry({ delaySeconds: delay });
+				log.info('Queue: dispatched, will check R2', {
 					jobId: job.jobId,
 					attempt: message.attempts,
+					retryInSeconds: delay,
 				});
 			} else {
 				const body = await resp.text().catch(() => '');
 				log.warn('Queue: container rejected', { jobId: job.jobId, status: resp.status, body: body.slice(0, 200) });
 				// Don't mark 'failed' — this is a retryable error. The container may
 				// have been starting up or the DO was busy. Keep current D1 status.
-				message.retry({ delaySeconds: 30 });
+				message.retry({ delaySeconds: Math.min(30 * message.attempts, 120) });
 			}
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
 			log.error('Queue: job error', { jobId: job.jobId, error: errorMsg, attempt: message.attempts });
 			// Don't mark 'failed' on retryable exceptions. The DLQ consumer
 			// handles terminal failure when all retries are exhausted.
-			message.retry({ delaySeconds: 60 });
+			message.retry({ delaySeconds: Math.min(60 * message.attempts, 300) });
 		}
 	}
 }

@@ -8,7 +8,8 @@ import type { Context } from 'hono';
 import type { Env, Variables } from '../types';
 import { requireAuth } from '../middleware/auth';
 import { AppError } from '../errors';
-import { listJobs, listActiveJobs, listFilteredJobs, type JobRow } from '../queue/jobs-db';
+import { listJobs, listActiveJobs, listFilteredJobs, retryJob, resetStaleJobs, deleteJob, type JobRow } from '../queue/jobs-db';
+import * as log from '../log';
 
 type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
 
@@ -55,6 +56,75 @@ export async function listJobsHandler(c: HonoContext) {
 	});
 
 	return c.json({ jobs: parsed, _meta: { ts: Date.now(), hours, active, filter: filter ?? null } });
+}
+
+/**
+ * POST /admin/jobs/retry — retry a stuck job or clear all stale jobs.
+ *
+ * Body options:
+ *   { "jobId": "..." }                — reset a single job to 'pending' + re-enqueue
+ *   { "staleMinutes": 30 }            — reset all jobs stuck longer than N minutes
+ *   { "jobId": "...", "delete": true } — delete a job from D1 entirely
+ */
+export async function retryJobHandler(c: HonoContext) {
+	requireAuth(c);
+	if (!c.env.ANALYTICS) throw new AppError(503, 'ANALYTICS_UNAVAILABLE', 'D1 binding not configured');
+
+	const body = await c.req.json();
+	const db = c.env.ANALYTICS;
+
+	// Delete a single job
+	if (body.jobId && body.delete === true) {
+		// Also clean up partial R2 result so a fresh transform can be stored
+		const r2Key = `_transformed/${body.jobId}`;
+		await c.env.VIDEOS.delete(r2Key).catch(() => {});
+		const deleted = await deleteJob(db, body.jobId);
+		log.info('Job deleted', { jobId: body.jobId, deleted });
+		return c.json({ ok: true, deleted, jobId: body.jobId });
+	}
+
+	// Retry a single job — reset D1 status + clean R2 + re-enqueue
+	if (body.jobId) {
+		const r2Key = `_transformed/${body.jobId}`;
+		await c.env.VIDEOS.delete(r2Key).catch(() => {});
+		const reset = await retryJob(db, body.jobId);
+		if (!reset) {
+			throw new AppError(404, 'JOB_NOT_FOUND', `Job not found or already complete: ${body.jobId}`);
+		}
+
+		// Re-enqueue if queue is available — the consumer will re-dispatch to container
+		if (c.env.TRANSFORM_QUEUE) {
+			// Fetch the job row to reconstruct the queue message
+			const row = await db.prepare('SELECT * FROM transform_jobs WHERE job_id = ?')
+				.bind(body.jobId).first<Record<string, unknown>>();
+			if (row && row.source_url) {
+				await c.env.TRANSFORM_QUEUE.send({
+					jobId: body.jobId,
+					path: row.path,
+					params: row.params_json ? JSON.parse(row.params_json as string) : {},
+					sourceUrl: row.source_url,
+					callbackCacheKey: body.jobId,
+					requestUrl: `https://${new URL(c.req.url).host}${row.path}`,
+					origin: row.origin ?? 'unknown',
+					sourceType: row.source_type ?? 'unknown',
+					createdAt: Date.now(),
+				});
+				log.info('Job re-enqueued', { jobId: body.jobId });
+			}
+		}
+
+		return c.json({ ok: true, reset: true, jobId: body.jobId, requeued: !!c.env.TRANSFORM_QUEUE });
+	}
+
+	// Bulk: reset all stale jobs
+	if (body.staleMinutes) {
+		const staleMs = body.staleMinutes * 60_000;
+		const count = await resetStaleJobs(db, staleMs);
+		log.info('Stale jobs reset', { staleMinutes: body.staleMinutes, count });
+		return c.json({ ok: true, resetCount: count, staleMinutes: body.staleMinutes });
+	}
+
+	throw new AppError(400, 'INVALID_BODY', 'Provide { jobId } or { staleMinutes }');
 }
 
 /**

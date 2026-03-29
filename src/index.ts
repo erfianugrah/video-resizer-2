@@ -17,7 +17,7 @@ import { cdnCgiPassthrough, nonVideoPassthrough } from './middleware/passthrough
 import { getConfig, postConfig, postCacheBust, getAnalytics, getAnalyticsErrors } from './handlers/admin';
 import { getR2Source } from './handlers/internal';
 import { transformHandler } from './handlers/transform';
-import { listJobsHandler, sseJobProgress } from './handlers/jobs';
+import { listJobsHandler, retryJobHandler, sseJobProgress } from './handlers/jobs';
 
 // Durable Object + analytics cleanup
 import { FFmpegContainer, ContainerProxy } from './transform/container';
@@ -53,6 +53,7 @@ app.get('/admin/analytics/errors', getAnalyticsErrors);
 // ── Job management routes ────────────────────────────────────────────────
 
 app.get('/admin/jobs', listJobsHandler);
+app.post('/admin/jobs/retry', retryJobHandler);
 app.get('/sse/job/:id', sseJobProgress);
 
 // ── Dashboard (static assets, auth-gated) ────────────────────────────────

@@ -33,6 +33,17 @@ const QUALITY_PRESETS = {
 
 await mkdir(WORK_DIR, { recursive: true });
 
+/**
+ * In-flight job dedup. Tracks currently-running async transforms by a
+ * key derived from source URL + params. The queue consumer retries every
+ * N seconds and each retry dispatches a new /transform-url — without
+ * dedup, concurrent ffmpeg processes fight for CPU/memory and all stall.
+ *
+ * Map<string, { startedAt: number }> — value carries start time so we
+ * can detect truly stuck jobs (defensive, not currently used for eviction).
+ */
+const inflightJobs = new Map();
+
 const server = createServer(async (req, res) => {
 	try {
 		if (req.method === 'GET' && req.url === '/health') {
@@ -422,10 +433,23 @@ async function handleTransformUrl(req, res) {
 
 	// If callback provided, respond immediately and process async
 	if (callbackUrl) {
+		// Dedup: if this source+params combo is already being processed, skip.
+		// The queue consumer retries every N seconds — without this guard,
+		// each retry spawns another ffmpeg process that competes for resources.
+		const dedupKey = `${sourceUrl}|${paramsJson}`;
+		if (inflightJobs.has(dedupKey)) {
+			console.log(`[${id}] Dedup: already processing ${dedupKey.slice(0, 120)}`);
+			res.writeHead(202, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ id, status: 'already-processing', dedup: true }));
+			return;
+		}
+		inflightJobs.set(dedupKey, { startedAt: Date.now() });
+
 		res.writeHead(202, { 'Content-Type': 'application/json' });
 		res.end(JSON.stringify({ id, status: 'processing' }));
 
-		processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputPath, callbackUrl, jobId);
+		processUrlTransform(id, sourceUrl, paramsJson, inputPath, outputPath, callbackUrl, jobId)
+			.finally(() => inflightJobs.delete(dedupKey));
 		return;
 	}
 

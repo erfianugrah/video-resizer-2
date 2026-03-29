@@ -55,24 +55,56 @@ dashboard/              # Astro + React + Radix UI + CVA (Lovelace design system
 
 ## Build / Test
 
-| Command              | Purpose                              |
-| -------------------- | ------------------------------------ |
-| `npm run dev`        | Local dev (`wrangler dev`)           |
-| `npm run deploy`     | Deploy to Cloudflare                 |
-| `npm run test:run`   | 186 unit tests (Workers pool)        |
-| `npm run test:e2e`   | 92 E2E tests (live HTTP)             |
-| `npm run test:browser` | 22 Playwright tests (Chromium)     |
-| `npx tsx scripts/smoke.ts` | 84 smoke tests (post-deploy)  |
-| `npm run check`      | TypeScript type check                |
+| Command                       | Purpose                          |
+| ----------------------------- | -------------------------------- |
+| `npm run dev`                 | Local dev (`wrangler dev`)       |
+| `npm run deploy`              | Build dashboard + deploy         |
+| `npm run check`               | TypeScript type check (`tsc`)    |
+| `npm run test:run`            | All unit tests (Workers pool)    |
+| `npm run test:e2e`            | E2E tests (live HTTP)            |
+| `npm run test:browser`        | Playwright tests (Chromium)      |
+| `npm run test:smoke`          | Smoke tests (post-deploy)        |
+| `npm run test:smoke:container`| Container smoke tests            |
 
-Single test: `npx vitest run test/path.spec.ts`
+**Single test file:** `npx vitest run test/path.spec.ts`
+**Single test by name:** `npx vitest run -t "test name pattern"`
+**Watch mode:** `npx vitest test/path.spec.ts`
+
 E2E/smoke need `CONFIG_API_TOKEN` env var. Domain configurable via `TEST_BASE_URL`.
 
 ## Code style
 
-Single quotes, semicolons, trailing commas (ES5), tabs, 140 width.
-Strict TypeScript, ES2022, Bundler resolution. camelCase files, PascalCase types.
-JSDoc on exports. Inline comments explain "why".
+- **Formatting:** tabs for indentation, 140 char line width, single quotes,
+  semicolons, trailing commas (ES5).
+- **TypeScript:** strict mode, ES2022 target, Bundler module resolution.
+  `noEmit` — types checked but never compiled (Wrangler bundles).
+- **File naming:** camelCase (`cacheKey.ts`). PascalCase for types/interfaces.
+- **JSDoc:** required on all exported functions/types. Inline comments explain
+  "why", not "what".
+- **No default exports** except the Worker entry (`src/index.ts`).
+
+### Imports
+
+- Use `import type` for type-only imports: `import type { Env } from './types'`.
+- Group imports: external packages first, then internal modules, blank line
+  between groups. Named imports only (no `import *` except `import * as log`).
+- Zod v4: always `import { z } from 'zod'` — never import from `zod/v4` or
+  `zod/lib`. Use two-arg `z.record(keySchema, valSchema)`. No `.merge()`.
+
+### Error handling
+
+- Throw `AppError(status, code, message, details?)` for all expected errors.
+  Hono's `app.onError` catches and returns JSON — no per-handler try/catch.
+- Machine-readable `code` uses SCREAMING_SNAKE: `'INVALID_PARAMS'`,
+  `'SOURCE_NOT_FOUND'`, `'TRANSFORM_FAILED'`.
+- Never swallow errors silently. Log unexpected errors via `log.error()`.
+
+### Types
+
+- Hono app type: `Hono<{ Bindings: Env; Variables: Variables }>`.
+- Handler context provides `c.env` (bindings) and `c.var` (middleware vars).
+- Config accessed via `c.var.config` (set by `configMiddleware`).
+- Prefer `interface` for object shapes, `type` for unions/intersections.
 
 ## Key patterns
 
@@ -115,3 +147,5 @@ Init: `npx wrangler d1 execute video-resizer-analytics --remote --file=src/analy
 ## Dependencies
 
 Production: `hono`, `zod` (v4), `aws4fetch`, `@cloudflare/containers`. Four deps.
+Dev: `@cloudflare/vitest-pool-workers`, `@cloudflare/workers-types`, `@playwright/test`,
+`typescript` (v6), `vitest` (~3.2), `wrangler` (v4).

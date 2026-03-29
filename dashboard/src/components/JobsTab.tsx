@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
-import { RefreshCw, ChevronRight, Loader2, Search, AlertTriangle } from 'lucide-react';
+import { RefreshCw, ChevronRight, Loader2, Search, AlertTriangle, RotateCcw, Trash2 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -100,7 +100,13 @@ function ParamBadge({ k, v }: { k: string; v: string }) {
 
 // ── Job Card (active jobs) ───────────────────────────────────────────
 
-function JobCard({ job, stale }: { job: JobRow; stale: boolean }) {
+function JobCard({ job, stale, onRetry, onDelete, actionLoading }: {
+	job: JobRow;
+	stale: boolean;
+	onRetry: (id: string) => void;
+	onDelete: (id: string) => void;
+	actionLoading: string | null;
+}) {
 	const color = stale ? '#eab308' : statusColor(job.status);
 	const percent = job.percent ?? 0;
 	const elapsed = job.started_at
@@ -116,7 +122,34 @@ function JobCard({ job, stale }: { job: JobRow; stale: boolean }) {
 						<span className="text-xs font-data tabular-nums text-muted-foreground">{formatDuration(elapsed)}</span>
 						{stale && <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />}
 					</div>
-					<span className={T.muted}>{job.origin ?? ''}</span>
+					<div className="flex items-center gap-1.5">
+						<span className={T.muted}>{job.origin ?? ''}</span>
+						{stale && (
+							<>
+								<Button
+									variant="ghost"
+									size="icon-sm"
+									title="Retry job"
+									disabled={actionLoading === job.job_id}
+									onClick={() => onRetry(job.job_id)}
+								>
+									{actionLoading === job.job_id
+										? <Loader2 className="h-3 w-3 animate-spin" />
+										: <RotateCcw className="h-3 w-3" />}
+								</Button>
+								<Button
+									variant="ghost"
+									size="icon-sm"
+									title="Delete job"
+									disabled={actionLoading === job.job_id}
+									onClick={() => onDelete(job.job_id)}
+									className="text-lv-red hover:text-lv-red"
+								>
+									<Trash2 className="h-3 w-3" />
+								</Button>
+							</>
+						)}
+					</div>
 				</div>
 
 				{/* Progress bar */}
@@ -160,8 +193,70 @@ export default function JobsTab({ token }: { token: string }) {
 	const [error, setError] = useState('');
 	const [pollInterval, setPollInterval] = useState(10);
 	const [expandedId, setExpandedId] = useState<string | null>(null);
+	const [actionLoading, setActionLoading] = useState<string | null>(null);
 
 	const sseRefs = useRef<Map<string, EventSource>>(new Map());
+
+	/** Retry or delete a job via the admin API. */
+	const jobAction = useCallback(async (jobId: string, action: 'retry' | 'delete') => {
+		if (!token) return;
+		setActionLoading(jobId);
+		try {
+			const body = action === 'delete'
+				? { jobId, delete: true }
+				: { jobId };
+			const resp = await fetch(`${BASE}/admin/jobs/retry`, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			});
+			if (!resp.ok) {
+				const data = await resp.json().catch(() => ({})) as { error?: { message?: string } };
+				setError(data.error?.message ?? `HTTP ${resp.status}`);
+				return;
+			}
+			// Remove from local state if deleted, or update status if retried
+			if (action === 'delete') {
+				setJobs((prev) => prev.filter((j) => j.job_id !== jobId));
+			} else {
+				setJobs((prev) => prev.map((j) =>
+					j.job_id === jobId ? { ...j, status: 'pending', percent: 0, error: null } : j,
+				));
+			}
+		} catch (e) {
+			setError(e instanceof Error ? e.message : 'Action failed');
+		} finally {
+			setActionLoading(null);
+		}
+	}, [token]);
+
+	/** Reset all stale jobs. */
+	const clearStale = useCallback(async () => {
+		if (!token) return;
+		setActionLoading('bulk-stale');
+		try {
+			const resp = await fetch(`${BASE}/admin/jobs/retry`, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ staleMinutes: Math.round(STALE_MS / 60_000) }),
+			});
+			if (!resp.ok) {
+				const data = await resp.json().catch(() => ({})) as { error?: { message?: string } };
+				setError(data.error?.message ?? `HTTP ${resp.status}`);
+				return;
+			}
+			const data = await resp.json() as { resetCount: number };
+			// Refresh job list to reflect changes
+			setJobs((prev) => prev.map((j) =>
+				isStale(j) ? { ...j, status: 'pending', percent: 0, error: null } : j,
+			));
+			setError('');
+		} catch (e) {
+			setError(e instanceof Error ? e.message : 'Action failed');
+		} finally {
+			setActionLoading(null);
+		}
+	}, [token]);
 
 	// Debounce filter input (300ms)
 	useEffect(() => {
@@ -335,10 +430,33 @@ export default function JobsTab({ token }: { token: string }) {
 			{/* Active jobs */}
 			{activeJobs.length > 0 && (
 				<div>
-					<h3 className={cn(T.sectionHeading, 'mb-3')}>Active ({activeJobs.length})</h3>
+					<div className="flex items-center justify-between mb-3">
+						<h3 className={T.sectionHeading}>Active ({activeJobs.length})</h3>
+						{activeJobs.some((j) => isStale(j)) && (
+							<Button
+								variant="outline"
+								size="xs"
+								className="gap-1.5 text-yellow-500 border-yellow-500/30 hover:bg-yellow-500/10"
+								disabled={actionLoading === 'bulk-stale'}
+								onClick={clearStale}
+							>
+								{actionLoading === 'bulk-stale'
+									? <Loader2 className="h-3 w-3 animate-spin" />
+									: <RotateCcw className="h-3 w-3" />}
+								Clear stale
+							</Button>
+						)}
+					</div>
 					<div className="grid gap-3">
 						{activeJobs.map((job) => (
-							<JobCard key={job.job_id} job={job} stale={isStale(job)} />
+							<JobCard
+								key={job.job_id}
+								job={job}
+								stale={isStale(job)}
+								onRetry={(id) => jobAction(id, 'retry')}
+								onDelete={(id) => jobAction(id, 'delete')}
+								actionLoading={actionLoading}
+							/>
 						))}
 					</div>
 				</div>
@@ -415,22 +533,50 @@ export default function JobsTab({ token }: { token: string }) {
 											{expanded && (
 												<TableRow className="bg-lovelace-950/50 hover:bg-lovelace-950/50">
 													<TableCell colSpan={7} className="py-3 px-4">
-														<dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-xs">
-															<dt className="text-muted-foreground">Job ID</dt>
-															<dd className="font-data text-lv-cyan truncate" title={job.job_id}>{job.job_id}</dd>
-															{job.source_type && <>
-																<dt className="text-muted-foreground">Source</dt>
-																<dd className="font-data">{job.source_type}</dd>
-															</>}
-															{job.error && <>
-																<dt className="text-lv-red">Error</dt>
-																<dd className="font-data text-lv-red">{job.error}</dd>
-															</>}
-															{job.params && Object.keys(job.params).length > 0 && <>
-																<dt className="text-muted-foreground">All params</dt>
-																<dd className="font-data">{Object.entries(job.params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).join(', ')}</dd>
-															</>}
-														</dl>
+														<div className="flex items-start justify-between gap-4">
+													<dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-xs">
+														<dt className="text-muted-foreground">Job ID</dt>
+														<dd className="font-data text-lv-cyan truncate" title={job.job_id}>{job.job_id}</dd>
+														{job.source_type && <>
+															<dt className="text-muted-foreground">Source</dt>
+															<dd className="font-data">{job.source_type}</dd>
+														</>}
+														{job.error && <>
+															<dt className="text-lv-red">Error</dt>
+															<dd className="font-data text-lv-red">{job.error}</dd>
+														</>}
+														{job.params && Object.keys(job.params).length > 0 && <>
+															<dt className="text-muted-foreground">All params</dt>
+															<dd className="font-data">{Object.entries(job.params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).join(', ')}</dd>
+														</>}
+													</dl>
+													<div className="flex gap-1.5 shrink-0">
+														{job.status !== 'complete' && (
+															<Button
+																variant="outline"
+																size="xs"
+																className="gap-1"
+																disabled={actionLoading === job.job_id}
+																onClick={(e) => { e.stopPropagation(); jobAction(job.job_id, 'retry'); }}
+															>
+																{actionLoading === job.job_id
+																	? <Loader2 className="h-3 w-3 animate-spin" />
+																	: <RotateCcw className="h-3 w-3" />}
+																Retry
+															</Button>
+														)}
+														<Button
+															variant="outline"
+															size="xs"
+															className="gap-1 text-lv-red border-lv-red/30 hover:bg-lv-red/10"
+															disabled={actionLoading === job.job_id}
+															onClick={(e) => { e.stopPropagation(); jobAction(job.job_id, 'delete'); }}
+														>
+															<Trash2 className="h-3 w-3" />
+															Delete
+														</Button>
+													</div>
+												</div>
 													</TableCell>
 												</TableRow>
 											)}

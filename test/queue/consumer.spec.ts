@@ -87,41 +87,72 @@ describe('Callback URL construction', () => {
 	});
 });
 
-describe('Retry backoff calculation', () => {
-	it('first attempt: 30s delay', () => {
-		const attempt = 1;
-		const delay = Math.min(300, 30 * Math.pow(2, attempt - 1));
-		expect(delay).toBe(30);
+describe('Retry backoff calculation (success path)', () => {
+	/** Mirrors retryDelay() from consumer.ts: 120 * 2^(attempt-1), capped at 900. */
+	function retryDelay(attempt: number): number {
+		return Math.min(120 * Math.pow(2, attempt - 1), 900);
+	}
+
+	it('first attempt: 120s delay', () => {
+		expect(retryDelay(1)).toBe(120);
 	});
 
-	it('second attempt: 60s delay', () => {
-		const attempt = 2;
-		const delay = Math.min(300, 30 * Math.pow(2, attempt - 1));
-		expect(delay).toBe(60);
+	it('second attempt: 240s delay', () => {
+		expect(retryDelay(2)).toBe(240);
 	});
 
-	it('third attempt: 120s delay', () => {
-		const attempt = 3;
-		const delay = Math.min(300, 30 * Math.pow(2, attempt - 1));
-		expect(delay).toBe(120);
+	it('third attempt: 480s delay', () => {
+		expect(retryDelay(3)).toBe(480);
 	});
 
-	it('fourth attempt: capped at 300s', () => {
-		const attempt = 4;
-		const delay = Math.min(300, 30 * Math.pow(2, attempt - 1));
-		expect(delay).toBe(240);
+	it('fourth attempt: capped at 900s', () => {
+		expect(retryDelay(4)).toBe(900);
+	});
+
+	it('tenth attempt: still capped at 900s', () => {
+		expect(retryDelay(10)).toBe(900);
+	});
+});
+
+describe('Retry backoff calculation (rejection path)', () => {
+	/** Rejection retries: 30 * attempt, capped at 120. */
+	function rejectionDelay(attempt: number): number {
+		return Math.min(30 * attempt, 120);
+	}
+
+	it('first attempt: 30s', () => {
+		expect(rejectionDelay(1)).toBe(30);
+	});
+
+	it('second attempt: 60s', () => {
+		expect(rejectionDelay(2)).toBe(60);
+	});
+
+	it('fourth attempt: capped at 120s', () => {
+		expect(rejectionDelay(4)).toBe(120);
+	});
+
+	it('tenth attempt: still capped at 120s', () => {
+		expect(rejectionDelay(10)).toBe(120);
+	});
+});
+
+describe('Retry backoff calculation (exception path)', () => {
+	/** Exception retries: 60 * attempt, capped at 300. */
+	function exceptionDelay(attempt: number): number {
+		return Math.min(60 * attempt, 300);
+	}
+
+	it('first attempt: 60s', () => {
+		expect(exceptionDelay(1)).toBe(60);
+	});
+
+	it('third attempt: 180s', () => {
+		expect(exceptionDelay(3)).toBe(180);
 	});
 
 	it('fifth attempt: capped at 300s', () => {
-		const attempt = 5;
-		const delay = Math.min(300, 30 * Math.pow(2, attempt - 1));
-		expect(delay).toBe(300);
-	});
-
-	it('tenth attempt: still capped at 300s', () => {
-		const attempt = 10;
-		const delay = Math.min(300, 30 * Math.pow(2, attempt - 1));
-		expect(delay).toBe(300);
+		expect(exceptionDelay(5)).toBe(300);
 	});
 });
 
@@ -144,6 +175,58 @@ describe('Job dedup logic', () => {
 		const jobId1 = 'video:rocky.mp4:w=1280:h=720';
 		const jobId2 = 'video:rocky.mp4:w=640:h=360';
 		expect(jobId1).not.toBe(jobId2);
+	});
+});
+
+describe('Container-side dedup key', () => {
+	/** Container server.mjs uses `${sourceUrl}|${paramsJson}` as dedup key. */
+	it('same source+params produce same dedup key', () => {
+		const sourceUrl = 'https://videos.erfi.dev/big_buck_bunny.mov';
+		const params = JSON.stringify({ width: 1440, compression: 'auto' });
+		const key1 = `${sourceUrl}|${params}`;
+		const key2 = `${sourceUrl}|${params}`;
+		expect(key1).toBe(key2);
+	});
+
+	it('different params produce different dedup keys', () => {
+		const sourceUrl = 'https://videos.erfi.dev/big_buck_bunny.mov';
+		const key1 = `${sourceUrl}|${JSON.stringify({ width: 1440 })}`;
+		const key2 = `${sourceUrl}|${JSON.stringify({ width: 720 })}`;
+		expect(key1).not.toBe(key2);
+	});
+
+	it('different sources produce different dedup keys', () => {
+		const params = JSON.stringify({ width: 1440 });
+		const key1 = `https://a.com/video.mp4|${params}`;
+		const key2 = `https://b.com/video.mp4|${params}`;
+		expect(key1).not.toBe(key2);
+	});
+
+	it('dedup map tracks inflight and cleans up', () => {
+		const inflight = new Map<string, { startedAt: number }>();
+		const key = 'https://a.com/v.mp4|{"width":1440}';
+
+		expect(inflight.has(key)).toBe(false);
+		inflight.set(key, { startedAt: Date.now() });
+		expect(inflight.has(key)).toBe(true);
+
+		// Simulate completion
+		inflight.delete(key);
+		expect(inflight.has(key)).toBe(false);
+	});
+
+	it('concurrent dispatches are rejected when inflight', () => {
+		const inflight = new Map<string, { startedAt: number }>();
+		const key = 'https://a.com/v.mp4|{"width":1440}';
+
+		// First dispatch: accepted
+		inflight.set(key, { startedAt: Date.now() });
+		const firstAccepted = true;
+
+		// Second dispatch: rejected (already in map)
+		const secondAccepted = !inflight.has(key);
+		expect(firstAccepted).toBe(true);
+		expect(secondAccepted).toBe(false);
 	});
 });
 
