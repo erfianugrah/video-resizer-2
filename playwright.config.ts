@@ -5,7 +5,7 @@ export default defineConfig({
 	timeout: 60_000,
 	retries: 0,
 	use: {
-		baseURL: 'https://videos.erfi.io',
+		baseURL: process.env.TEST_BASE_URL ?? 'https://videos.erfi.io',
 		headless: true,
 	},
 	projects: [

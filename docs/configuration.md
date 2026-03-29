@@ -9,13 +9,13 @@ Upload via admin API:
 curl -X POST -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d @config.json \
-    https://videos.erfi.io/admin/config
+    https://your-domain.com/admin/config
 ```
 
 Retrieve:
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
-    https://videos.erfi.io/admin/config
+    https://your-domain.com/admin/config
 ```
 
 ## Schema
@@ -64,12 +64,12 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 **Remote:**
 ```json
-{ "type": "remote", "url": "https://videos.erfi.dev", "priority": 1 }
+{ "type": "remote", "url": "https://your-origin.com", "priority": 1 }
 ```
 
 **Fallback:**
 ```json
-{ "type": "fallback", "url": "https://backup.erfi.dev", "priority": 2 }
+{ "type": "fallback", "url": "https://backup.example.com", "priority": 2 }
 ```
 
 ### Auth (on any source)
@@ -143,7 +143,7 @@ All fields optional. Only specified fields override the request params.
             "matcher": "^/([^.]+)\\.(mp4|webm|mov)",
             "captureGroups": ["videoId", "extension"],
             "sources": [
-                { "type": "remote", "priority": 0, "url": "https://videos.erfi.dev" },
+                { "type": "remote", "priority": 0, "url": "https://your-origin.com" },
                 { "type": "r2", "priority": 1, "bucketBinding": "VIDEOS" }
             ],
             "ttl": { "ok": 86400, "redirects": 300, "clientError": 60, "serverError": 10 },
@@ -199,7 +199,7 @@ After first deploy, upload the config:
 curl -X POST -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d @config.json \
-    https://videos.erfi.io/admin/config
+    https://your-domain.com/admin/config
 ```
 
 ### D1 tables

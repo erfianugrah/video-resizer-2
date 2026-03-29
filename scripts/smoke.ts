@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * Smoke test for videos.erfi.io after deploy.
+ * Smoke test for live deployment after deploy.
  *
  * Usage:
  *   npx tsx scripts/smoke.ts              # run all tests
@@ -13,9 +13,11 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 
-const BASE = 'https://videos.erfi.io';
-const SMALL = '/erfi-135kg.mp4'; // 232MB, R2 + remote — more realistic than rocky
-const HUGE = '/big_buck_bunny_1080p.mov'; // 725MB, remote + R2 — container path
+// All configurable via env vars — set in shell or .env.test
+const BASE = process.env.TEST_BASE_URL ?? 'https://videos.erfi.io';
+const SMALL = process.env.TEST_SMALL_VIDEO ?? '/erfi-135kg.mp4'; // 232MB, R2 + remote
+const SMALL2 = process.env.TEST_SMALL2_VIDEO ?? '/rocky.mp4'; // ~40MB, secondary test file
+const HUGE = process.env.TEST_HUGE_VIDEO ?? '/big_buck_bunny_1080p.mov'; // 725MB, remote + R2 — container path
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -497,7 +499,7 @@ test('?debug skips edge cache, serves from R2 or fresh transform', async () => {
 });
 
 // Source type verification
-test('source: erfi uses r2 or remote on fresh transform', async () => {
+test('source: small2 uses r2 or remote on fresh transform', async () => {
 	const r = await GET(`${SMALL}?width=337&debug`);
 	// On fresh transform, x-source-type is set. On R2 HIT, it may be absent.
 	const st = h(r, 'x-source-type');
@@ -509,7 +511,7 @@ test('source: erfi uses r2 or remote on fresh transform', async () => {
 	// If R2 HIT, source type comes from R2 metadata — may or may not be present
 });
 
-test('source: erfi-135kg has source type on transform', async () => {
+test('source: small video has source type on transform', async () => {
 	// Unique width forces fresh transform (not R2 HIT with old metadata)
 	const r = await GET(`${SMALL}?width=338&duration=5s&debug`);
 	assertEq(r.status, 200, 'status');
@@ -690,7 +692,7 @@ test('container param: bitrate triggers needsContainer via debug', async () => {
 });
 
 test('mode=spritesheet: returns image/jpeg', async () => {
-	const r = await GET(`/rocky.mp4?mode=spritesheet&width=320&duration=5s&imageCount=4`);
+	const r = await GET(`${SMALL2}?mode=spritesheet&width=320&duration=5s&imageCount=4`);
 	if (r.status === 200) {
 		assertContains(h(r, 'content-type') ?? '', 'image/jpeg', 'content-type');
 		assertGt(parseInt(h(r, 'content-length') ?? '0', 10), 0, 'has content');
@@ -699,64 +701,64 @@ test('mode=spritesheet: returns image/jpeg', async () => {
 });
 
 test('akamai: imformat=h264 does not trigger container', async () => {
-	const r = await GET(`/rocky.mp4?imformat=h264&width=320&debug=view`);
+	const r = await GET(`${SMALL2}?imformat=h264&width=320&debug=view`);
 	const body = await r.json() as any;
 	assertEq(body.diagnostics.needsContainer, false, 'needsContainer');
 });
 
 test('akamai: imformat=h265 triggers container', async () => {
-	const r = await GET(`/rocky.mp4?imformat=h265&width=320&debug=view`);
+	const r = await GET(`${SMALL2}?imformat=h265&width=320&debug=view`);
 	const body = await r.json() as any;
 	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
 });
 
 test('akamai: imdensity=2 sets dpr param', async () => {
-	const r = await GET(`/rocky.mp4?imdensity=2&width=320&debug=view`);
+	const r = await GET(`${SMALL2}?imdensity=2&width=320&debug=view`);
 	const body = await r.json() as any;
 	assertEq(body.diagnostics.params.dpr, 2, 'dpr');
 });
 
 test('akamai: f=png shorthand with mode=frame', async () => {
-	const r = await GET(`/rocky.mp4?mode=frame&f=png&w=320&debug=view`);
+	const r = await GET(`${SMALL2}?mode=frame&f=png&w=320&debug=view`);
 	const body = await r.json() as any;
 	assertEq(body.diagnostics.params.format, 'png', 'format');
 	assertEq(body.diagnostics.params.width, 320, 'width');
 });
 
 test('akamai: imref is consumed without error', async () => {
-	const r = await GET(`/rocky.mp4?imref=policy%3Dmobile%2Cwidth%3D1080&imwidth=640&debug=view`);
+	const r = await GET(`${SMALL2}?imref=policy%3Dmobile%2Cwidth%3D1080&imwidth=640&debug=view`);
 	assertEq(r.status, 200, 'status');
 	const body = await r.json() as any;
 	assert(!!body.diagnostics, 'has diagnostics');
 });
 
 test('direct param: quality=high accepted', async () => {
-	const r = await GET(`/rocky.mp4?quality=high&width=320&debug=view`);
+	const r = await GET(`${SMALL2}?quality=high&width=320&debug=view`);
 	const body = await r.json() as any;
 	assertEq(body.diagnostics.params.quality, 'high', 'quality');
 });
 
 test('direct param: compression=high accepted', async () => {
-	const r = await GET(`/rocky.mp4?compression=high&width=320&debug=view`);
+	const r = await GET(`${SMALL2}?compression=high&width=320&debug=view`);
 	const body = await r.json() as any;
 	assertEq(body.diagnostics.params.compression, 'high', 'compression');
 });
 
 test('duration: 1h triggers needsContainer (>60s)', async () => {
-	const r = await GET(`/rocky.mp4?duration=1h&width=320&debug=view`);
+	const r = await GET(`${SMALL2}?duration=1h&width=320&debug=view`);
 	const body = await r.json() as any;
 	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
 });
 
 test('duration: 500ms does not trigger needsContainer', async () => {
-	const r = await GET(`/rocky.mp4?duration=500ms&width=320&debug=view`);
+	const r = await GET(`${SMALL2}?duration=500ms&width=320&debug=view`);
 	const body = await r.json() as any;
 	assertEq(body.diagnostics.needsContainer, false, 'needsContainer');
 });
 
 test('cache key: fit=cover differs from fit=contain', async () => {
-	const r1 = await GET(`/rocky.mp4?width=321&height=241&fit=cover`);
-	const r2 = await GET(`/rocky.mp4?width=321&height=241&fit=contain`);
+	const r1 = await GET(`${SMALL2}?width=321&height=241&fit=cover`);
+	const r2 = await GET(`${SMALL2}?width=321&height=241&fit=contain`);
 	const k1 = h(r1, 'x-cache-key');
 	const k2 = h(r2, 'x-cache-key');
 	assert(k1 !== k2, `keys differ: ${k1} vs ${k2}`);
@@ -765,16 +767,16 @@ test('cache key: fit=cover differs from fit=contain', async () => {
 });
 
 test('cache key: audio=true differs from audio=false', async () => {
-	const r1 = await GET(`/rocky.mp4?width=322&audio=true`);
-	const r2 = await GET(`/rocky.mp4?width=322&audio=false`);
+	const r1 = await GET(`${SMALL2}?width=322&audio=true`);
+	const r2 = await GET(`${SMALL2}?width=322&audio=false`);
 	const k1 = h(r1, 'x-cache-key');
 	const k2 = h(r2, 'x-cache-key');
 	assert(k1 !== k2, `keys differ: ${k1} vs ${k2}`);
 });
 
 test('cache key: different duration produces different key', async () => {
-	const r1 = await GET(`/rocky.mp4?width=323&duration=3s`);
-	const r2 = await GET(`/rocky.mp4?width=323&duration=8s`);
+	const r1 = await GET(`${SMALL2}?width=323&duration=3s`);
+	const r2 = await GET(`${SMALL2}?width=323&duration=8s`);
 	const k1 = h(r1, 'x-cache-key');
 	const k2 = h(r2, 'x-cache-key');
 	assert(k1 !== k2, `keys differ: ${k1} vs ${k2}`);

@@ -12,22 +12,22 @@ Transforms the video at `{path}` using the specified params. Returns the transfo
 
 ```bash
 # Resize to 1280x720
-curl https://videos.erfi.io/rocky.mp4?width=1280&height=720
+curl https://your-domain.com/rocky.mp4?width=1280&height=720
 
 # Extract frame at 5s as JPEG
-curl https://videos.erfi.io/rocky.mp4?mode=frame&time=5s&width=640
+curl https://your-domain.com/rocky.mp4?mode=frame&time=5s&width=640
 
 # Generate spritesheet (20 frames)
-curl https://videos.erfi.io/rocky.mp4?mode=spritesheet&width=160&imageCount=20
+curl https://your-domain.com/rocky.mp4?mode=spritesheet&width=160&imageCount=20
 
 # Extract audio only
-curl https://videos.erfi.io/rocky.mp4?mode=audio&duration=30s
+curl https://your-domain.com/rocky.mp4?mode=audio&duration=30s
 
 # Named preset
-curl https://videos.erfi.io/rocky.mp4?derivative=tablet
+curl https://your-domain.com/rocky.mp4?derivative=tablet
 
 # Akamai IMQuery compatible
-curl https://videos.erfi.io/rocky.mp4?impolicy=mobile&imwidth=854
+curl https://your-domain.com/rocky.mp4?impolicy=mobile&imwidth=854
 ```
 
 ### Response headers
@@ -62,7 +62,7 @@ When the source is too large for edge transform, returns 202 with job info:
     "jobId": "video:big_buck_bunny.mov:w=320:c=auto:v=3",
     "message": "Video is being transformed. Retry shortly.",
     "path": "/big_buck_bunny.mov",
-    "ws": "wss://videos.erfi.io/ws/job/video%3Abig_buck_bunny..."
+    "sse": "https://your-domain.com/sse/job/video%3Abig_buck_bunny..."
 }
 ```
 
@@ -134,7 +134,6 @@ Summary response:
 GET /admin/jobs?hours=24&limit=50       # List recent jobs
 GET /admin/jobs?active=true             # List active (non-terminal) jobs
 GET /admin/jobs?filter=bunny            # Text search on path/jobId/status
-GET /admin/jobs/:id                     # Single job status from TransformJobDO
 ```
 
 Job response:
@@ -145,12 +144,13 @@ Job response:
         "path": "/big_buck_bunny.mov",
         "origin": "standard",
         "status": "transcoding",
+        "percent": 45,
         "params": { "width": 320, "compression": "auto" },
         "source_type": "remote",
         "created_at": 1774713000000,
         "started_at": 1774713010000,
         "completed_at": null,
-        "source_url": "https://videos.erfi.dev/big_buck_bunny.mov",
+        "source_url": "https://your-origin.com/big_buck_bunny.mov",
         "error": null,
         "output_size": null
     }],
@@ -158,27 +158,25 @@ Job response:
 }
 ```
 
-## WebSocket (real-time job progress)
+## SSE (real-time job progress)
 
 ```
-GET /ws/job/{jobId}
-Upgrade: websocket
+GET /sse/job/{jobId}
 ```
 
-Connects to the TransformJobDO for real-time progress updates. The DO uses the Hibernation API (sleeps between updates, no billing while idle).
+Server-Sent Events stream for real-time progress. Polls D1 every 2s, streams updates, auto-closes on terminal state. Dashboard uses `EventSource` (auto-reconnect built in).
 
-Messages from server:
-```json
-{ "status": "downloading", "progress": 0 }
-{ "status": "transcoding", "progress": 45 }
-{ "status": "uploading", "progress": 90 }
-{ "status": "complete", "progress": 100 }
-{ "status": "failed", "error": "ffmpeg failed..." }
+Events from server:
+```
+data: {"status":"downloading","percent":0}
+data: {"status":"transcoding","percent":45}
+data: {"status":"uploading","percent":90}
+data: {"status":"complete","percent":100}
+data: {"status":"failed","error":"ffmpeg failed..."}
+data: {"status":"not_found","jobId":"nonexistent-id"}
 ```
 
-Client can send `"status"` to request current state.
-
-Connection closes automatically on job completion (code 1000).
+Response headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`.
 
 ## Dashboard
 
@@ -215,6 +213,5 @@ Errors with details (e.g., validation failures) include a `details` field:
 Not intended for external use. Called by container outbound handler.
 
 ```
-POST /internal/container-result?path=...&cacheKey=...&requestUrl=...&jobId=...
-GET  /internal/r2-source?key=...&bucket=VIDEOS
+GET  /internal/r2-source?key=...&bucket=VIDEOS   # Auth required
 ```

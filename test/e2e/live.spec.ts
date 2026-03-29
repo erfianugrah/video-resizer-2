@@ -1,5 +1,5 @@
 /**
- * E2E tests against the live deployment at videos.erfi.io.
+ * E2E tests against the live deployment.
  *
  * Tests the full pipeline: CF edge -> Worker -> Media binding/cdn-cgi/container -> Cache API.
  * Run with: npm run test:e2e
@@ -18,13 +18,14 @@
  */
 import { describe, it, expect } from 'vitest';
 
-const BASE = 'https://videos.erfi.io';
-const SMALL = '/rocky.mp4'; // ~40MB, remote + R2
-const MEDIUM = '/erfi-135kg.mp4'; // ~232MB, R2 only
-const HUGE = '/big_buck_bunny_1080p.mov'; // ~725MB, remote + R2
-const SMALL_RAW_SIZE = 40_000_000; // approximate raw size of rocky.mp4
-const MEDIUM_RAW_SIZE = 232_000_000;
-const HUGE_RAW_SIZE = 725_000_000;
+// All configurable via env vars — set in .env.test or shell
+const BASE = process.env.TEST_BASE_URL ?? 'https://videos.erfi.io';
+const SMALL = process.env.TEST_SMALL_VIDEO ?? '/rocky.mp4'; // ~40MB, remote + R2
+const MEDIUM = process.env.TEST_MEDIUM_VIDEO ?? '/erfi-135kg.mp4'; // ~232MB, R2 only
+const HUGE = process.env.TEST_HUGE_VIDEO ?? '/big_buck_bunny_1080p.mov'; // ~725MB, remote + R2
+const SMALL_RAW_SIZE = parseInt(process.env.TEST_SMALL_SIZE ?? '40000000', 10);
+const MEDIUM_RAW_SIZE = parseInt(process.env.TEST_MEDIUM_SIZE ?? '232000000', 10);
+const HUGE_RAW_SIZE = parseInt(process.env.TEST_HUGE_SIZE ?? '725000000', 10);
 const API_TOKEN: string = (globalThis as Record<string, unknown>).process
 	? ((globalThis as Record<string, unknown>).process as Record<string, Record<string, string>>).env?.CONFIG_API_TOKEN ?? ''
 	: '';

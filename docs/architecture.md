@@ -79,7 +79,7 @@ const response = await result.response();
 For remote HTTP sources up to 100 MiB. Constructs a `cdn-cgi/media` URL with transform options encoded as path segments. The Cloudflare edge fetches the source and transforms it — video bytes never enter Worker memory.
 
 ```
-https://videos.erfi.io/cdn-cgi/media/width=1280,height=720,fit=contain/https://videos.erfi.dev/rocky.mp4
+https://your-domain.com/cdn-cgi/media/width=1280,height=720,fit=contain/https://your-origin.com/rocky.mp4
 ```
 
 ### Tier 3: FFmpeg container

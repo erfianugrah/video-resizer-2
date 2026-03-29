@@ -36,7 +36,7 @@ Container transforms are dispatched via Cloudflare Queue for durability.
 ```
 Client Request (>100 MiB or container-only params)
   -> Transform handler enqueues job to TRANSFORM_QUEUE
-  -> Returns 202 with jobId and WebSocket URL
+  -> Returns 202 with jobId and SSE URL
   -> Registers job in D1 (transform_jobs table)
 
 Queue Consumer (stateless, retry-until-done):
@@ -49,7 +49,7 @@ FFmpegContainer DO:
   -> Downloads source via HTTPS (or R2 via /internal/r2-source)
   -> Streams to disk via pipeline() (no OOM on 725MB+)
   -> Runs ffmpeg with all available CPU cores
-  -> Reports progress via /internal/job-progress -> TransformJobDO -> WebSocket
+  -> Reports progress via /internal/job-progress -> D1 percent update
   -> Streams output to callback via outbound handler
   -> Outbound handler stores result in R2 (_transformed/{cacheKey})
 
@@ -84,57 +84,25 @@ Next Client Request:
     "jobId": "video:big_buck_bunny_1080p.mov:w=320:c=auto:v=3",
     "message": "Video is being transformed. Retry shortly.",
     "path": "/big_buck_bunny_1080p.mov",
-    "ws": "wss://videos.erfi.io/ws/job/video%3Abig_buck_bunny..."
+    "sse": "https://your-domain.com/sse/job/video%3Abig_buck_bunny..."
 }
 ```
 
 Headers: `Retry-After: 10`, `X-Transform-Pending: true`, `X-Job-Id: {jobId}`
 
-## Job tracking (TransformJobDO)
+## Job tracking (D1 + SSE)
 
-Durable Object per unique transform (keyed by cache key). Manages job lifecycle and WebSocket connections using the Hibernation API (sleeps between progress updates, no billing while idle).
+D1 is the sole source of truth for job state. The `transform_jobs` table stores status and percent progress. The SSE endpoint (`GET /sse/job/:id`) polls D1 every 2s and streams updates to the dashboard.
 
 State machine:
 ```
-(none) -> pending -> downloading -> transcoding -> uploading -> complete
-                                                             -> failed
+pending -> downloading -> transcoding -> uploading -> complete
+                                                   -> failed
 ```
 
-Default status is `'none'` (not `'pending'`) -- this is critical. A brand new DO must be distinguishable from a submitted job to avoid false dedup.
+Progress is reported by the container via ffmpeg stderr parsing (`time=HH:MM:SS` lines), written to D1 via the outbound handler, and streamed to clients via SSE.
 
-### WebSocket progress
-
-Clients connect to `wss://{host}/ws/job/{jobId}` for real-time updates:
-
-```json
-{ "status": "transcoding", "progress": 45 }
-{ "status": "complete", "progress": 100 }
-```
-
-Progress is reported by the container via ffmpeg stderr parsing (`time=HH:MM:SS` lines), scaled to 10-85% range during transcoding.
-
-## D1 job registry
-
-The `transform_jobs` table enables dashboard job discovery (DOs don't have a "list all instances" API).
-
-```sql
-CREATE TABLE transform_jobs (
-    job_id TEXT PRIMARY KEY,
-    path TEXT NOT NULL,
-    origin TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    params_json TEXT,
-    source_url TEXT,
-    source_type TEXT,
-    created_at INTEGER NOT NULL,
-    started_at INTEGER,
-    completed_at INTEGER,
-    error TEXT,
-    output_size INTEGER
-);
-```
-
-Status updates: registered on enqueue, updated to `downloading` by consumer, updated to `complete` on edge cache HIT / R2 HIT / container callback.
+Schema: see `src/analytics/schema.sql` (single source of truth). Includes `percent` column for progress tracking.
 
 ## Source dedup
 
@@ -163,8 +131,8 @@ The `FFmpegContainer.outbound` static handler intercepts ALL outbound HTTP from 
 
 | Path | Method | Action |
 |------|--------|--------|
-| `/internal/job-progress` | GET | Forward progress to TransformJobDO + update D1 |
-| `/internal/container-result` | POST | Store result in R2, update D1 + TransformJobDO |
+| `/internal/job-progress` | GET | Update D1 status + percent progress |
+| `/internal/container-result` | POST | Store result in R2, update D1 status |
 | `/internal/r2-source` | GET | Serve R2 object via binding (for R2-only sources) |
 | Everything else (GET, >1MB) | GET | Proxy via fetch() with source dedup (R2 cache) |
 | Everything else | * | Proxy via fetch() with http->https upgrade |
@@ -172,8 +140,8 @@ The `FFmpegContainer.outbound` static handler intercepts ALL outbound HTTP from 
 ## Design lessons
 
 - **Don't ack on 202**: container accepting (202) != done. Ack only after R2 result confirmed.
-- **DO default state matters**: `status: 'none'` not `'pending'`. Any overlap with valid job states causes false dedup.
+- **No 'failed' on retryable errors**: consumer only marks `'failed'` via DLQ (all retries exhausted). Avoids status oscillation (failed→downloading→failed).
 - **`require()` in ESM crashes silently**: `server.mjs` must use `import` at top, not `require()` in functions.
 - **Edge cache hides D1 updates**: add D1 status updates in all serve paths (edge HIT, R2 HIT, fresh transform).
-- **WebSocket refs, not state**: store connections in `useRef` to avoid React re-render loops.
+- **Never `arrayBuffer()` on container output**: use `ReadableStream` directly to R2 `put()`. Container outputs can be hundreds of MB.
 - **`max_batch_timeout: 0` may break delivery**: use `5` instead.

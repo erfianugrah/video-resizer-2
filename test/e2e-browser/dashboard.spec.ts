@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 
 const TOKEN = process.env.CONFIG_API_TOKEN ?? 'test-analytics-token-2026';
+const SMALL = process.env.TEST_SMALL_VIDEO ?? '/rocky.mp4';
+const HUGE = process.env.TEST_HUGE_VIDEO ?? '/big_buck_bunny_1080p.mov';
 
 // Helper: login and wait for dashboard to fully render
 async function login(page: import('@playwright/test').Page) {
@@ -137,7 +139,7 @@ test.describe('Debug tab', () => {
 
 	test('tests a URL and shows diagnostics', async ({ page }) => {
 		const input = page.locator('input[type="text"]');
-		await input.fill('/rocky.mp4?derivative=tablet');
+		await input.fill('${SMALL}?derivative=tablet');
 		await page.click('button:has-text("Test")');
 		await expect(page.getByText('Param Resolution')).toBeVisible({ timeout: 15_000 });
 		await expect(page.getByText('derivative', { exact: true })).toBeVisible();
@@ -147,7 +149,7 @@ test.describe('Debug tab', () => {
 	test('shows response headers', async ({ page }) => {
 		const input = page.locator('input[type="text"]');
 		await expect(input).toBeVisible({ timeout: 5_000 });
-		await input.fill('/rocky.mp4?width=320');
+		await input.fill('${SMALL}?width=320');
 		await page.click('button:has-text("Test")');
 		await expect(page.getByText('Response Headers')).toBeVisible({ timeout: 15_000 });
 		await expect(page.getByText('x-request-id')).toBeVisible();
@@ -165,7 +167,7 @@ test.describe('Debug tab', () => {
 
 test.describe('Video transforms in browser', () => {
 	test('video serves with derivative=tablet', async ({ page }) => {
-		const response = await page.goto('/rocky.mp4?derivative=tablet');
+		const response = await page.goto('${SMALL}?derivative=tablet');
 		expect(response?.status()).toBe(200);
 		expect(response?.headers()['content-type']).toBe('video/mp4');
 		const contentLength = parseInt(response?.headers()['content-length'] ?? '0', 10);
@@ -174,13 +176,13 @@ test.describe('Video transforms in browser', () => {
 	});
 
 	test('frame mode returns image', async ({ page }) => {
-		const response = await page.goto('/rocky.mp4?mode=frame&width=320');
+		const response = await page.goto('${SMALL}?mode=frame&width=320');
 		expect(response?.status()).toBe(200);
 		expect(response?.headers()['content-type']).toBe('image/jpeg');
 	});
 
 	test('range request works (video seeking)', async ({ request }) => {
-		const response = await request.get('/rocky.mp4?derivative=tablet', {
+		const response = await request.get('${SMALL}?derivative=tablet', {
 			headers: { Range: 'bytes=0-999' },
 		});
 		expect(response.status()).toBe(206);
@@ -188,7 +190,7 @@ test.describe('Video transforms in browser', () => {
 	});
 
 	test('Akamai params work: imwidth=640', async ({ request }) => {
-		const response = await request.get('/rocky.mp4?imwidth=640');
+		const response = await request.get('${SMALL}?imwidth=640');
 		expect(response.status()).toBe(200);
 		expect(response.headers()['content-type']).toBe('video/mp4');
 		const size = parseInt(response.headers()['content-length'] ?? '0', 10);
@@ -197,13 +199,13 @@ test.describe('Video transforms in browser', () => {
 	});
 
 	test('cache works: second request is HIT', async ({ request }) => {
-		await request.get('/rocky.mp4?derivative=tablet');
-		const r2 = await request.get('/rocky.mp4?derivative=tablet');
+		await request.get('${SMALL}?derivative=tablet');
+		const r2 = await request.get('${SMALL}?derivative=tablet');
 		expect(r2.headers()['cf-cache-status']).toBe('HIT');
 	});
 
 	test('container result from R2 serves correctly', async ({ request }) => {
-		const response = await request.get('/big_buck_bunny_1080p.mov?imwidth=320');
+		const response = await request.get('${HUGE}?imwidth=320');
 		if (response.headers()['content-type'] === 'video/mp4') {
 			const size = parseInt(response.headers()['content-length'] ?? '0', 10);
 			expect(size).toBeLessThan(725_000_000);

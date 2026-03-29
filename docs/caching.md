@@ -83,7 +83,7 @@ R2 object etag is included in the cache key. When the source video is replaced i
 curl -X POST -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d '{"path":"/rocky.mp4"}' \
-    https://videos.erfi.io/admin/cache/bust
+    https://your-domain.com/admin/cache/bust
 ```
 
 Bumps the KV version number for that path. All cache keys for that path now include the new version, causing cache misses on the old versions.

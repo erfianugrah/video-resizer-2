@@ -2,9 +2,7 @@
 
 Video transformation service on Cloudflare Workers. Accepts video URLs, applies transforms (resize, crop, extract frames, spritesheets, audio extraction), and serves cached results with range request support.
 
-Rewrite of [video-resizer v1](../video-resizer/) (~40K lines) using the Media Transformations binding, Hono, Zod 4, and Cloudflare Containers. ~4K lines.
-
-**Live:** https://videos.erfi.io
+Rewrite of video-resizer v1 (~40K lines) using the Media Transformations binding, Hono, Zod 4, and Cloudflare Containers. ~4K lines.
 
 ## Quick start
 
@@ -12,12 +10,14 @@ Rewrite of [video-resizer v1](../video-resizer/) (~40K lines) using the Media Tr
 npm install
 npm run dev                   # local dev (wrangler dev)
 npm run deploy                # deploy to Cloudflare
-npm run test:run              # 180 unit/integration tests
-npm run test:e2e              # 74 E2E tests against live deployment
+npm run test:run              # 186 unit/integration tests
+npm run test:e2e              # 92 E2E tests against live deployment
 npm run test:browser          # 22 Playwright browser tests
-npm run test:smoke            # 64 smoke tests against live
+npx tsx scripts/smoke.ts      # 84 smoke tests against live
 npm run check                 # TypeScript strict mode
 ```
+
+See [SETUP.md](SETUP.md) for detailed setup from scratch.
 
 ## Architecture
 
@@ -35,22 +35,11 @@ Container transforms are queue-based: enqueue -> consumer dispatches to containe
 Request
   -> Edge cache (cf-cache-status: HIT)
   -> R2 persistent store (_transformed/{key})
-  -> Request coalescing (per-isolate LRU dedup)
+  -> Request coalescing (per-isolate signal-based dedup)
   -> Source resolution (R2 binding / remote HTTP / fallback)
   -> Transform (binding / cdn-cgi / container queue)
-  -> Response (tee -> client + R2 + edge cache + D1 analytics)
+  -> Response (stream -> R2 + edge cache + D1 analytics)
 ```
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Architecture](docs/architecture.md) | Request pipeline, three-tier routing, container async flow, dedup stack |
-| [Parameters](docs/parameters.md) | All transform params, Akamai/IMQuery translation, derivatives, responsive sizing |
-| [Container & Queue](docs/container.md) | FFmpeg container, queue-based job pipeline, progress tracking, source dedup |
-| [Caching](docs/caching.md) | Edge + R2 cache layers, cache keys, range requests, cache busting |
-| [Configuration](docs/configuration.md) | Config schema, origins, sources, auth types, deployment setup |
-| [API Reference](docs/api.md) | All HTTP endpoints, admin API, WebSocket, response headers |
 
 ## Project structure
 
@@ -58,23 +47,24 @@ Request
 src/
   index.ts                    # Hono app wiring (routes + middleware + exports)
   types.ts, errors.ts, log.ts # Core types, error class, structured logging
+  util.ts                     # Shared utilities (timingSafeEqual)
   config/                     # Zod 4 schema + KV hot-reload loader
   middleware/                  # via, config, passthrough, auth, error
   handlers/                   # admin, transform, jobs, dashboard, internal
   params/                     # param parsing, Akamai translation, derivatives, responsive
-  transform/                  # Media binding, cdn-cgi, FFmpeg container + job DO
+  transform/                  # Media binding, cdn-cgi, FFmpeg container + job types
   sources/                    # origin routing, auth (S3/bearer/header), presigned URLs
-  cache/                      # cache keys, edge store, version registry, request coalescing
-  analytics/                  # D1 analytics middleware + aggregation queries
-  queue/                      # Queue consumer + D1 job registry
+  cache/                      # cache keys, version registry, request coalescing
+  queue/                      # Queue consumer, DLQ consumer, D1 job registry
+  analytics/                  # D1 analytics middleware + aggregation queries + schema.sql
 container/
   Dockerfile                  # node:22-slim + ffmpeg
   server.mjs                  # HTTP server: /transform, /transform-url, /health
 dashboard/
-  src/components/Dashboard.tsx # React: Analytics, Jobs, Debug tabs
+  src/components/             # Dashboard.tsx, AnalyticsTab, JobsTab, DebugTab, shared
 scripts/
-  smoke.ts                    # Standalone smoke test (64 checks)
-test/                         # 180 unit + 74 E2E + 22 browser tests
+  smoke.ts                    # Standalone smoke test (84 checks)
+test/                         # 186 unit + 92 E2E + 22 browser tests
 ```
 
 ## Bindings
@@ -85,9 +75,8 @@ test/                         # 180 unit + 74 E2E + 22 browser tests
 | `VIDEOS` | R2 Bucket | Source videos + transform cache + source cache |
 | `CONFIG` | KV | Worker configuration |
 | `CACHE_VERSIONS` | KV | Cache version registry for manual busting |
-| `ANALYTICS` | D1 | Request analytics + job registry |
+| `ANALYTICS` | D1 | Request analytics + job registry (schema.sql) |
 | `FFMPEG_CONTAINER` | Container DO | FFmpeg transforms (4 vCPU, 12GB RAM, 20GB disk) |
-| `TRANSFORM_JOB` | Durable Object | Job state machine + WebSocket progress |
 | `TRANSFORM_QUEUE` | Queue | Durable job dispatch with retry + DLQ |
 | `ASSETS` | Static Assets | Dashboard UI |
 | `CONFIG_API_TOKEN` | Secret | Bearer token for admin endpoints |
@@ -95,3 +84,43 @@ test/                         # 180 unit + 74 E2E + 22 browser tests
 ## Dependencies
 
 4 production dependencies: `hono`, `zod` (v4), `aws4fetch`, `@cloudflare/containers`.
+
+## Transform examples
+
+```bash
+# Resize video
+curl https://your-domain.com/video.mp4?width=640&height=360
+
+# Named derivative preset
+curl https://your-domain.com/video.mp4?derivative=tablet
+
+# Extract frame as JPEG
+curl https://your-domain.com/video.mp4?mode=frame&time=5s&width=320
+
+# Extract audio
+curl https://your-domain.com/video.mp4?mode=audio&duration=30s
+
+# Spritesheet
+curl https://your-domain.com/video.mp4?mode=spritesheet&duration=10s&imageCount=10
+
+# Akamai/IMQuery compatibility
+curl https://your-domain.com/video.mp4?imwidth=1280&impolicy=tablet
+
+# Debug diagnostics
+curl https://your-domain.com/video.mp4?derivative=tablet&debug=view
+```
+
+## Admin API
+
+All admin endpoints require `Authorization: Bearer <CONFIG_API_TOKEN>`.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin/config` | GET | Retrieve current config |
+| `/admin/config` | POST | Upload new config (Zod validated) |
+| `/admin/cache/bust` | POST | Bust cache for a path `{"path": "/video.mp4"}` |
+| `/admin/analytics` | GET | Analytics summary `?hours=24` |
+| `/admin/analytics/errors` | GET | Recent errors `?hours=24&limit=50` |
+| `/admin/jobs` | GET | Container job list `?hours=24&active=true&filter=text` |
+| `/admin/dashboard` | GET | Dashboard UI (cookie auth) |
+| `/sse/job/:id` | GET | SSE progress stream for a container job |
