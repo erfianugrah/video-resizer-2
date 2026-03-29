@@ -158,6 +158,10 @@ dist
 .yarn/install-state.gz
 .pnp.\*
 
+# Playwright test results
+test-results/
+playwright-report/
+
 # wrangler project
 
 .dev.vars*
