@@ -614,25 +614,24 @@ test('container: range request on R2-cached result', async () => {
 
 // ── Queue / Job endpoints ────────────────────────────────────────────────
 
-test('job: GET /admin/jobs/:id without auth returns 401', async () => {
-	const r = await GET('/admin/jobs/nonexistent-job-id');
+test('job: GET /admin/jobs without auth returns 401', async () => {
+	const r = await GET('/admin/jobs');
 	assertEq(r.status, 401, 'status');
 });
 
-test('job: GET /admin/jobs/:id with auth returns job state', async () => {
-	const r = await GET('/admin/jobs/nonexistent-job-id', {
+test('job: GET /admin/jobs with auth returns job list', async () => {
+	const r = await GET('/admin/jobs?hours=24&limit=10', {
 		headers: { Authorization: `Bearer ${process.env.CONFIG_API_TOKEN ?? 'test-analytics-token-2026'}` },
 	});
 	assertEq(r.status, 200, 'status');
 	const body = await r.json() as any;
-	assert(!!body.job, 'has job field');
-	assert(typeof body.job.status === 'string', 'has status string');
-	assert(typeof body.job.progress === 'number', 'has progress number');
+	assert(Array.isArray(body.jobs), 'jobs is array');
+	assert(typeof body._meta.ts === 'number', 'has _meta.ts');
 });
 
-test('job: GET /ws/job/:id without Upgrade returns 426', async () => {
-	const r = await GET('/ws/job/test-job-id');
-	assertEq(r.status, 426, 'status');
+test('job: GET /sse/job/:id returns text/event-stream', async () => {
+	const r = await GET('/sse/job/test-job-id');
+	assertContains(r.headers.get('content-type') ?? '', 'text/event-stream', 'content-type');
 });
 
 test('job: 202 from oversized source includes job metadata', async () => {
@@ -647,9 +646,9 @@ test('job: 202 from oversized source includes job metadata', async () => {
 			assert(typeof body.jobId === 'string', 'jobId is string');
 			assertGt(body.jobId.length, 0, 'jobId not empty');
 		}
-		if (body.ws) {
-			assertContains(body.ws, 'wss://', 'ws protocol');
-			assertContains(body.ws, '/ws/job/', 'ws path');
+		if (body.sse) {
+			assertContains(body.sse, 'https://', 'sse protocol');
+			assertContains(body.sse, '/sse/job/', 'sse path');
 		}
 	}
 	// 200 = cached from prior run, also ok

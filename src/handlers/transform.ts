@@ -359,11 +359,36 @@ export async function transformHandler(c: HonoContext) {
 	}
 
 	// 4. Request coalescing — join in-flight transform if one exists
+	//    Only coalesce cacheable requests. Non-cacheable (debug/pending) responses
+	//    have live-stream bodies that can't be shared between requests.
 	const coalesceKey = buildCacheKey(path, params);
-	const inflight = coalescer.get(coalesceKey);
-	if (inflight) {
-		rlog.info('Coalesced', { path, coalesceKey });
-		return inflight;
+	if (!skipCache) {
+		const inflight = coalescer.get(coalesceKey);
+		if (inflight) {
+			rlog.info('Coalesced — waiting for in-flight transform', { path, coalesceKey });
+			await inflight;
+			// Transform is done and stored — read from cache independently
+			const cached = await cache.match(cacheReq);
+			if (cached) {
+				rlog.info('Coalesced cache HIT', { path });
+				cached.headers.set('X-Request-ID', requestId);
+				return cached;
+			}
+			// Rare: cache.match miss right after put. Fall through to R2 check
+			// (line 282 above already ran, but result may now exist).
+			const r2Retry = await c.env.VIDEOS.get(r2TransformKey);
+			if (r2Retry) {
+				rlog.info('Coalesced R2 fallback HIT', { path });
+				return new Response(r2Retry.body, {
+					headers: {
+						'Content-Type': r2Retry.httpMetadata?.contentType ?? 'video/mp4',
+						'Content-Length': String(r2Retry.size),
+						'X-Request-ID': requestId,
+					},
+				});
+			}
+			rlog.warn('Coalesced miss after signal, proceeding with own transform', { path });
+		}
 	}
 
 	// 5. Resolve source + transform (wrapped in a coalescing promise)
@@ -376,6 +401,7 @@ export async function transformHandler(c: HonoContext) {
 		let etag: string | undefined;
 		let version: number | undefined;
 		let sourceType: string = 'unknown';
+		let transformSource: string = 'unknown';
 
 		// Container-only params: route to container if enabled
 		const containerNeeded = needsContainer(params);
@@ -405,6 +431,7 @@ export async function transformHandler(c: HonoContext) {
 					if (stream) {
 						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
 						transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, stream, params, instanceKey);
+						transformSource = 'container';
 						break;
 					}
 				} catch (err) {
@@ -469,10 +496,10 @@ export async function transformHandler(c: HonoContext) {
 								etag,
 								version,
 							}, rlog);
-							const wsUrl = c.env.TRANSFORM_JOB ? `wss://${zoneHost}/ws/job/${encodeURIComponent(jobId)}` : undefined;
+							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
 							return {
 								transformed: new Response(
-									JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, ws: wsUrl }),
+									JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
 									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
 								),
 								etag, version, sourceType,
@@ -484,11 +511,13 @@ export async function transformHandler(c: HonoContext) {
 							size: object.size, limit: BINDING_SIZE_LIMIT,
 						});
 						transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, object.body, params, instanceKey);
+						transformSource = 'container';
 						break;
 					}
 
 					try {
 						transformed = await transformViaBinding(c.env.MEDIA, object.body, params);
+						transformSource = 'binding';
 					} catch (bindingErr) {
 						// Reactive container fallback: if binding rejects oversized input
 						if (bindingErr instanceof AppError && bindingErr.code.startsWith('MEDIA_ERROR') && c.env.FFMPEG_CONTAINER) {
@@ -497,6 +526,7 @@ export async function transformHandler(c: HonoContext) {
 							if (retryObject) {
 								const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
 								transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, retryObject.body, params, instanceKey);
+								transformSource = 'container';
 								break;
 							}
 						}
@@ -510,6 +540,7 @@ export async function transformHandler(c: HonoContext) {
 								if (retryObject) {
 									const retryParams = { ...params, duration: maxDur };
 									transformed = await transformViaBinding(c.env.MEDIA, retryObject.body, retryParams);
+									transformSource = 'binding';
 								}
 							}
 						}
@@ -558,10 +589,10 @@ export async function transformHandler(c: HonoContext) {
 							sourceType,
 							version,
 						}, rlog);
-						const wsUrl = c.env.TRANSFORM_JOB ? `wss://${zoneHost}/ws/job/${encodeURIComponent(jobId)}` : undefined;
+						const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
 						return {
 							transformed: new Response(
-								JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, ws: wsUrl }),
+								JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
 								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
 							),
 							etag, version, sourceType,
@@ -604,9 +635,9 @@ export async function transformHandler(c: HonoContext) {
 								sourceType,
 								version,
 							}, rlog);
-							const wsUrl = c.env.TRANSFORM_JOB ? `wss://${zoneHost}/ws/job/${encodeURIComponent(jobId)}` : undefined;
+							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
 							return { transformed: new Response(
-								JSON.stringify({ status: result.status, jobId, message: `Source too large for edge transform (${cfErrDesc}). Processing via container.`, path, ws: wsUrl }),
+								JSON.stringify({ status: result.status, jobId, message: `Source too large for edge transform (${cfErrDesc}). Processing via container.`, path, sse: sseUrl }),
 								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
 							), etag, version, sourceType };
 						}
@@ -639,6 +670,7 @@ export async function transformHandler(c: HonoContext) {
 					}
 
 					transformed = resp;
+					transformSource = 'cdn-cgi';
 					break;
 				}
 			} catch (err) {
@@ -686,11 +718,12 @@ export async function transformHandler(c: HonoContext) {
 			});
 		}
 
-		return { transformed, etag, version, sourceType };
+		return { transformed, etag, version, sourceType, transformSource };
 	})();
 
 	// Register for coalescing, clean up when done
-	const responsePromise = transformPromise.then(async ({ transformed, etag, version, sourceType }) => {
+	const responsePromise = transformPromise.then(async ({ transformed, etag, version, sourceType, transformSource: rawTransformSource }) => {
+		const transformSource = rawTransformSource ?? 'unknown';
 		const cacheKey = buildCacheKey(path, params, version, etag);
 		const durationMs = Math.round(performance.now() - startTime);
 
@@ -723,7 +756,7 @@ export async function transformHandler(c: HonoContext) {
 		headers.set('X-R2-Cache', shouldCache ? 'HIT' : 'MISS');
 		headers.set('X-Origin', originMatch.origin.name);
 		headers.set('X-Source-Type', sourceType);
-		headers.set('X-Transform-Source', sourceType === 'r2' ? 'binding' : 'cdn-cgi');
+		headers.set('X-Transform-Source', transformSource);
 		headers.set('X-Processing-Time-Ms', String(durationMs));
 		if (etag) headers.set('X-Source-Etag', etag);
 		if (params.width) headers.set('X-Resolved-Width', String(params.width));
@@ -773,7 +806,7 @@ export async function transformHandler(c: HonoContext) {
 				derivative: params.derivative ?? null,
 				durationMs,
 				cacheHit: false,
-				transformSource: sourceType === 'r2' ? 'binding' : 'cdn-cgi',
+				transformSource,
 				sourceType,
 				errorCode: null,
 				bytes: parseInt(transformed.headers.get('Content-Length') ?? '0', 10) || null,
@@ -791,22 +824,32 @@ export async function transformHandler(c: HonoContext) {
 			// 1. Stream transform output directly to R2
 			if (contentLength) {
 				const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));
-				transformed.body.pipeTo(fixedStream.writable);
+				transformed.body.pipeTo(fixedStream.writable).catch((err) => {
+					rlog.error('pipeTo failed in transform R2 store', {
+						error: err instanceof Error ? err.message : String(err), path,
+					});
+				});
 				await c.env.VIDEOS.put(r2StoreKey, fixedStream.readable, {
 					httpMetadata: { contentType: ct },
 					customMetadata: {
-						transformSource: sourceType === 'r2' ? 'binding' : 'cdn-cgi',
+						transformSource,
 						sourceType,
 						cacheKey,
 					},
 				});
 			} else {
-				// No Content-Length — can't stream to R2, skip persistent store
-				rlog.warn('No Content-Length, skipping R2 store', { path });
-				await cache.put(cacheReq, new Response(transformed.body, { status: 200, headers: new Headers(headers) }));
-				const cached = await cache.match(cacheReq);
-				if (cached) return cached;
-				return new Response(null, { status: 200, headers });
+				// No Content-Length — stream directly to R2. R2 accepts ReadableStream
+				// and handles sizing internally. Never buffer via arrayBuffer() — transform
+				// outputs can exceed the 128MB Worker memory limit.
+				rlog.warn('No Content-Length, streaming directly to R2', { path });
+				await c.env.VIDEOS.put(r2StoreKey, transformed.body, {
+					httpMetadata: { contentType: ct },
+					customMetadata: {
+						transformSource,
+						sourceType,
+						cacheKey,
+					},
+				});
 			}
 			rlog.info('R2 transform stored', { path, r2Key: r2StoreKey, size: contentLength });
 
@@ -830,8 +873,12 @@ export async function transformHandler(c: HonoContext) {
 		}
 	});
 
-	coalescer.set(coalesceKey, responsePromise);
-	responsePromise.finally(() => coalescer.delete(coalesceKey));
+	// Register signal (void) for coalescing — only for cacheable requests
+	if (!skipCache) {
+		const signal = responsePromise.then(() => {});
+		coalescer.set(coalesceKey, signal);
+		signal.finally(() => coalescer.delete(coalesceKey));
+	}
 
 	return await responsePromise;
 }

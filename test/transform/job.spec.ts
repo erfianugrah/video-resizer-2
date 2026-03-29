@@ -1,8 +1,9 @@
 /**
- * Tests for TransformJobDO state machine, JobMessage types, and JobState shape.
+ * Tests for JobMessage types and JobStatus state machine.
+ * (TransformJobDO was removed — job state lives in D1 now.)
  */
 import { describe, it, expect } from 'vitest';
-import type { JobMessage, JobStatus, JobState } from '../../src/transform/job';
+import type { JobMessage, JobStatus } from '../../src/transform/job';
 
 describe('JobMessage', () => {
 	it('has required fields', () => {
@@ -86,96 +87,6 @@ describe('JobStatus', () => {
 	});
 });
 
-describe('JobState', () => {
-	it('has correct shape for a pending job', () => {
-		const state: JobState = {
-			status: 'pending',
-			progress: 0,
-			error: null,
-			createdAt: Date.now(),
-			startedAt: null,
-			completedAt: null,
-			path: '/rocky.mp4',
-			origin: 'standard',
-			params: { width: 1280 },
-		};
-		expect(state.status).toBe('pending');
-		expect(state.progress).toBe(0);
-		expect(state.error).toBeNull();
-		expect(state.startedAt).toBeNull();
-	});
-
-	it('has correct shape for a completed job', () => {
-		const now = Date.now();
-		const state: JobState = {
-			status: 'complete',
-			progress: 100,
-			error: null,
-			createdAt: now - 60000,
-			startedAt: now - 50000,
-			completedAt: now,
-			path: '/big.mov',
-			origin: 'standard',
-			params: { width: 320 },
-		};
-		expect(state.status).toBe('complete');
-		expect(state.progress).toBe(100);
-		expect(state.completedAt).toBe(now);
-		expect(state.completedAt! - state.createdAt!).toBe(60000);
-	});
-
-	it('has correct shape for a failed job', () => {
-		const state: JobState = {
-			status: 'failed',
-			progress: 45,
-			error: 'ffmpeg failed (exit 1): Output file is empty',
-			createdAt: Date.now() - 5000,
-			startedAt: Date.now() - 4000,
-			completedAt: null,
-			path: '/broken.mp4',
-			origin: 'standard',
-			params: {},
-		};
-		expect(state.status).toBe('failed');
-		expect(state.error).toContain('ffmpeg');
-		expect(state.completedAt).toBeNull();
-	});
-
-	it('has correct shape for a transcoding job with progress', () => {
-		const state: JobState = {
-			status: 'transcoding',
-			progress: 67,
-			error: null,
-			createdAt: Date.now() - 120000,
-			startedAt: Date.now() - 100000,
-			completedAt: null,
-			path: '/huge.mov',
-			origin: 'cdn',
-			params: { width: 1920, height: 1080, quality: 'high' },
-		};
-		expect(state.status).toBe('transcoding');
-		expect(state.progress).toBe(67);
-		expect(state.progress).toBeGreaterThan(0);
-		expect(state.progress).toBeLessThan(100);
-	});
-
-	it('round-trips through JSON', () => {
-		const state: JobState = {
-			status: 'uploading',
-			progress: 90,
-			error: null,
-			createdAt: 1711612800000,
-			startedAt: 1711612810000,
-			completedAt: null,
-			path: '/test.mp4',
-			origin: 'test',
-			params: { fps: 30 },
-		};
-		const parsed: JobState = JSON.parse(JSON.stringify(state));
-		expect(parsed).toEqual(state);
-	});
-});
-
 describe('State machine transitions', () => {
 	it('valid transition sequence: pending -> downloading -> transcoding -> uploading -> complete', () => {
 		const transitions: JobStatus[] = ['pending', 'downloading', 'transcoding', 'uploading', 'complete'];
@@ -189,7 +100,6 @@ describe('State machine transitions', () => {
 	it('failed can occur from any state', () => {
 		const states: JobStatus[] = ['pending', 'downloading', 'transcoding', 'uploading'];
 		for (const state of states) {
-			// Simulating that failed can follow any state
 			const seq: JobStatus[] = [state, 'failed'];
 			expect(seq[seq.length - 1]).toBe('failed');
 		}
@@ -203,7 +113,7 @@ describe('State machine transitions', () => {
 			uploading: [90],
 			complete: [100],
 		};
-		for (const [phase, values] of Object.entries(progressMap)) {
+		for (const [, values] of Object.entries(progressMap)) {
 			for (const v of values) {
 				expect(v).toBeGreaterThanOrEqual(0);
 				expect(v).toBeLessThanOrEqual(100);

@@ -24,7 +24,7 @@
 import { Container, ContainerProxy } from '@cloudflare/containers';
 import type { TransformParams } from '../params/schema';
 import { AppError } from '../errors';
-import { completeJob, failJob, updateJobStatus } from '../queue/jobs-db';
+import { completeJob, failJob, updateJobStatus, updateJobProgress } from '../queue/jobs-db';
 import * as log from '../log';
 
 // ContainerProxy must be exported from the Worker entry point for outbound
@@ -51,9 +51,6 @@ export class FFmpegContainer extends Container {
 	// If no requests arrive at the DO for this duration, the container is killed.
 	sleepAfter = '15m';
 
-	/** Track whether this DO instance has an active job. */
-	private jobInFlight = false;
-
 	override onStart() {
 		log.info('FFmpeg container started');
 		this.ctx.container?.monitor()
@@ -64,41 +61,19 @@ export class FFmpegContainer extends Container {
 	}
 
 	override onStop() {
-		this.jobInFlight = false;
 		log.info('FFmpeg container stopped');
 	}
 
 	override onError(error: unknown) {
-		this.jobInFlight = false;
 		log.error('FFmpeg container error', {
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
 
-	/**
-	 * Override fetch to add job dedup. If this DO already has a job in flight,
-	 * return 202 immediately without starting another container job. The
-	 * instance key (which includes the params hash) ensures each unique
-	 * transform gets its own DO — so this dedup is per-transform, not global.
-	 */
-	override async fetch(request: Request): Promise<Response> {
-		const url = new URL(request.url);
-
-		// Only dedup async transform-url requests (the ones that take minutes)
-		if (url.pathname === '/transform-url' && request.method === 'POST') {
-			if (this.jobInFlight) {
-				log.info('Container DO: job already in flight, skipping duplicate');
-				return new Response(JSON.stringify({ status: 'already_processing' }), {
-					status: 202,
-					headers: { 'Content-Type': 'application/json' },
-				});
-			}
-			this.jobInFlight = true;
-		}
-
-		// Forward to the container (Container base class handles port routing)
-		return super.fetch(request);
-	}
+	// No per-DO dedup — the queue consumer handles dedup by checking R2
+	// for existing results before dispatching. The old jobInFlight flag
+	// caused 15-minute lockouts after successful jobs because it was
+	// never reset on completion (only on onStop/onError).
 }
 
 /**
@@ -128,18 +103,9 @@ export class FFmpegContainer extends Container {
 		const percent = parseInt(url.searchParams.get('percent') ?? '0', 10);
 
 		if (jobId) {
-			const transformJob = (env as Record<string, unknown>).TRANSFORM_JOB as DurableObjectNamespace | undefined;
-			if (transformJob) {
-				const jobDO = transformJob.get(transformJob.idFromName(jobId));
-				await jobDO.fetch(new Request('http://job/progress', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ phase, percent }),
-				})).catch(() => {});
-			}
-			// Update D1 status (coarse — just the phase, not percent)
+			// Write phase + percent directly to D1 (SSE endpoint reads from D1)
 			const analyticsDb = (env as Record<string, unknown>).ANALYTICS as D1Database | undefined;
-			if (analyticsDb) updateJobStatus(analyticsDb, jobId, phase);
+			if (analyticsDb) updateJobProgress(analyticsDb, jobId, phase, percent);
 		}
 		return new Response('ok');
 	}
@@ -156,27 +122,12 @@ export class FFmpegContainer extends Container {
 			return new Response(JSON.stringify({ ok: false, error: 'missing params' }), { status: 400 });
 		}
 
-		// Helper to notify TransformJobDO of state changes
-		const transformJob = (env as Record<string, unknown>).TRANSFORM_JOB as DurableObjectNamespace | undefined;
-		const notifyJob = async (action: string, body?: object) => {
-			if (!jobId || !transformJob) return;
-			try {
-				const jobDO = transformJob.get(transformJob.idFromName(jobId));
-				await jobDO.fetch(new Request(`http://job/${action}`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: body ? JSON.stringify(body) : '{}',
-				}));
-			} catch { /* best-effort */ }
-		};
-
 		const analyticsDb = (env as Record<string, unknown>).ANALYTICS as D1Database | undefined;
 
 		const isError = request.headers.get('X-Transform-Error') === 'true';
 		if (isError) {
 			const errBody = await request.text().catch(() => '');
 			log.error('Container async transform failed', { cacheKey, path, errorTail: errBody.slice(-1500) });
-			await notifyJob('fail', { error: `ffmpeg transform failed: ${errBody.slice(-500)}` });
 			if (jobId && analyticsDb) failJob(analyticsDb, jobId, errBody.slice(-500));
 			return new Response(JSON.stringify({ ok: false, error: 'transform failed' }), { status: 200 });
 		}
@@ -211,7 +162,7 @@ export class FFmpegContainer extends Container {
 		// streams into cache.put + serves to client in one shot.
 		// Store in R2 — container always sends Content-Length (from stat() on
 		// the ffmpeg output file), so we stream via FixedLengthStream.
-		await notifyJob('progress', { phase: 'uploading', percent: 90 });
+		if (jobId && analyticsDb) updateJobProgress(analyticsDb, jobId, 'uploading', 90);
 
 		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
 		const r2Key = `_transformed/${cacheKey}`;
@@ -222,11 +173,20 @@ export class FFmpegContainer extends Container {
 			};
 			if (contentLength) {
 				const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));
-				body.pipeTo(fixedStream.writable);
+				body.pipeTo(fixedStream.writable).catch((err) => {
+					log.error('pipeTo failed in container outbound', {
+						error: err instanceof Error ? err.message : String(err), r2Key,
+					});
+				});
 				await r2.put(r2Key, fixedStream.readable, r2Metadata);
 			} else {
-				const bodyBytes = await new Response(body).arrayBuffer();
-				await r2.put(r2Key, bodyBytes, r2Metadata);
+				// No Content-Length — stream directly to R2. R2 accepts ReadableStream
+				// and handles sizing internally (no Worker memory buffering).
+				// Container server.mjs always sends Content-Length via stat(), so this
+				// path is purely defensive. Never use arrayBuffer() here — container
+				// outputs can be hundreds of MB, exceeding the 128MB Worker limit.
+				log.warn('Container callback missing Content-Length, streaming directly to R2', { r2Key });
+				await r2.put(r2Key, body, r2Metadata);
 			}
 		}
 
@@ -235,7 +195,7 @@ export class FFmpegContainer extends Container {
 		// the job is done. The DO's jobInFlight flag resets on next onStop
 		// or when the sleepAfter timer fires.)
 
-		await notifyJob('complete');
+		// D1 complete is handled by completeJob below
 		if (jobId && analyticsDb) {
 			completeJob(analyticsDb, jobId, contentLength ? parseInt(contentLength, 10) : undefined);
 		}
@@ -311,7 +271,11 @@ export class FFmpegContainer extends Container {
 					const [stream1, stream2] = resp.body.tee();
 					// Background: store in R2 for other containers
 					const fixed = new FixedLengthStream(parseInt(contentLength, 10));
-					stream2.pipeTo(fixed.writable).catch(() => {});
+					stream2.pipeTo(fixed.writable).catch((err) => {
+						log.warn('Source dedup pipeTo failed', {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					});
 					r2.put(srcCacheKey, fixed.readable, {
 						httpMetadata: { contentType: ct },
 					}).then(() => log.info('Source cached in R2', { key: srcCacheKey, size: contentLength }))

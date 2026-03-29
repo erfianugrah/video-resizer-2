@@ -257,6 +257,17 @@ describe('params/schema', () => {
 			expect(needsContainer({ duration: '30s' })).toBe(false);
 			expect(needsContainer({ duration: '1m' })).toBe(false);
 		});
+
+		it('handles hour durations correctly', () => {
+			expect(needsContainer({ duration: '1h' })).toBe(true);
+			expect(needsContainer({ duration: '1h30m' })).toBe(true);
+			expect(needsContainer({ duration: '1h30m15s' })).toBe(true);
+		});
+
+		it('does not match ms suffix as minutes', () => {
+			// "10ms" should NOT be parsed as "10 minutes" (600s)
+			expect(needsContainer({ duration: '10ms' })).toBe(false);
+		});
 	});
 
 	describe('parseImRef', () => {

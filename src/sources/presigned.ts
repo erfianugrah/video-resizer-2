@@ -88,26 +88,12 @@ async function generatePresignedUrl(
 		service: auth.service ?? 's3',
 	});
 
-	// aws4fetch.sign() with the special AWS query-string presigning approach.
-	// We add X-Amz-Expires to the URL, then sign it. aws4fetch will put
-	// the signature in the Authorization header, but we can also construct
-	// the query string version.
+	// Set X-Amz-Expires before signing — aws4fetch only sets it if absent
+	// (defaults to 86400). All other X-Amz-* params are computed by aws4fetch
+	// when signQuery: true (verified in aws4fetch source, lines 104-123).
 	const url = new URL(sourceUrl);
-	const now = new Date();
-	const dateStamp = now.toISOString().replace(/[:\-]|\.\d{3}/g, '').slice(0, 8);
-	const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, '').slice(0, 15) + 'Z';
-	const credential = `${accessKeyId}/${dateStamp}/${auth.region}/${auth.service ?? 's3'}/aws4_request`;
-
-	url.searchParams.set('X-Amz-Algorithm', 'AWS4-HMAC-SHA256');
-	url.searchParams.set('X-Amz-Credential', credential);
-	url.searchParams.set('X-Amz-Date', amzDate);
 	url.searchParams.set('X-Amz-Expires', String(expiresSeconds));
-	url.searchParams.set('X-Amz-SignedHeaders', 'host');
-	if (sessionToken) {
-		url.searchParams.set('X-Amz-Security-Token', sessionToken);
-	}
 
-	// Sign the request — aws4fetch will compute the signature
 	const signed = await client.sign(url.toString(), {
 		method: 'GET',
 		aws: { signQuery: true },

@@ -23,7 +23,6 @@ export interface Env {
 
 	// Queue-based container transforms (optional)
 	TRANSFORM_QUEUE?: Queue;
-	TRANSFORM_JOB?: DurableObjectNamespace;
 }
 
 /** Hono context variables set by middleware. */

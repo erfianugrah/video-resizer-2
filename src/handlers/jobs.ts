@@ -2,36 +2,15 @@
  * Job management handlers.
  *
  * GET  /admin/jobs          — list active/recent jobs from D1 registry
- * GET  /admin/jobs/:id      — get single job status from TransformJobDO
- * GET  /ws/job/:id          — WebSocket upgrade to TransformJobDO for real-time progress
+ * GET  /sse/job/:id         — SSE stream of job progress from D1
  */
 import type { Context } from 'hono';
 import type { Env, Variables } from '../types';
 import { requireAuth } from '../middleware/auth';
 import { AppError } from '../errors';
-import { listJobs, listActiveJobs, listFilteredJobs } from '../queue/jobs-db';
+import { listJobs, listActiveJobs, listFilteredJobs, type JobRow } from '../queue/jobs-db';
 
 type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
-
-/**
- * GET /ws/job/:id — WebSocket proxy to TransformJobDO.
- */
-export async function wsJobHandler(c: HonoContext) {
-	const jobId = c.req.param('id');
-	if (!jobId) throw new AppError(400, 'MISSING_JOB_ID', 'Job ID required');
-
-	if (!c.env.TRANSFORM_JOB) {
-		throw new AppError(503, 'JOBS_UNAVAILABLE', 'TRANSFORM_JOB binding not configured');
-	}
-
-	const upgradeHeader = c.req.header('Upgrade');
-	if (!upgradeHeader || upgradeHeader !== 'websocket') {
-		throw new AppError(426, 'UPGRADE_REQUIRED', 'Expected WebSocket upgrade');
-	}
-
-	const jobDO = c.env.TRANSFORM_JOB.get(c.env.TRANSFORM_JOB.idFromName(jobId));
-	return jobDO.fetch(c.req.raw);
-}
 
 /**
  * GET /admin/jobs — list all recent/active jobs from D1 registry.
@@ -54,14 +33,12 @@ export async function listJobsHandler(c: HonoContext) {
 	const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10), 200);
 	const sinceMs = Date.now() - hours * 3600_000;
 
-	// Server-side staleness: mark jobs active for >20 min as 'stale'.
-	// Queue max_retries=10 x 120s = 20 min. After that, retries exhausted.
-	const STALE_MS = 20 * 60_000;
-	await c.env.ANALYTICS.prepare(
-		`UPDATE transform_jobs SET status = 'stale', error = 'Timed out (queue retries likely exhausted)' WHERE status IN ('pending','downloading','transcoding','uploading') AND created_at < ?`,
-	).bind(Date.now() - STALE_MS).run().catch(() => {});
+	// Staleness is computed client-side in the dashboard, not via D1 mutation.
+	// The DLQ consumer marks terminal failures. Active jobs stay in their
+	// current status (downloading/transcoding/uploading) until the container
+	// reports completion or the DLQ consumer marks them failed.
 
-	let jobs;
+	let jobs: JobRow[];
 	if (active) {
 		jobs = await listActiveJobs(c.env.ANALYTICS);
 	} else if (filter) {
@@ -71,29 +48,96 @@ export async function listJobsHandler(c: HonoContext) {
 	}
 
 	// Parse params_json for each job
-	const parsed = jobs.map((j) => ({
-		...j,
-		params: j.params_json ? JSON.parse(j.params_json) : null,
-		params_json: undefined,
-	}));
+	const parsed = jobs.map((j) => {
+		let params: Record<string, unknown> | null = null;
+		try { params = j.params_json ? JSON.parse(j.params_json) : null; } catch { /* corrupt data */ }
+		return { ...j, params, params_json: undefined };
+	});
 
 	return c.json({ jobs: parsed, _meta: { ts: Date.now(), hours, active, filter: filter ?? null } });
 }
 
 /**
- * GET /admin/jobs/:id — get status of a single job via TransformJobDO.
+ * GET /sse/job/:id — Server-Sent Events stream for job progress.
+ *
+ * Polls D1 every 2s and streams status/percent updates to the client.
+ * Auto-closes when job reaches a terminal state (complete/failed).
+ * Dashboard uses EventSource API for auto-reconnect.
  */
-export async function getJobStatus(c: HonoContext) {
-	requireAuth(c);
+export async function sseJobProgress(c: HonoContext) {
 	const jobId = c.req.param('id');
 	if (!jobId) throw new AppError(400, 'MISSING_JOB_ID', 'Job ID required');
+	if (!c.env.ANALYTICS) throw new AppError(503, 'ANALYTICS_UNAVAILABLE', 'D1 binding not configured');
 
-	if (!c.env.TRANSFORM_JOB) {
-		throw new AppError(503, 'JOBS_UNAVAILABLE', 'TRANSFORM_JOB binding not configured');
-	}
+	const db = c.env.ANALYTICS;
+	const encoder = new TextEncoder();
+	let closed = false;
 
-	const jobDO = c.env.TRANSFORM_JOB.get(c.env.TRANSFORM_JOB.idFromName(jobId));
-	const resp = await jobDO.fetch(new Request('http://job/status', { method: 'GET' }));
-	const state = await resp.json();
-	return c.json({ job: state, _meta: { ts: Date.now() } });
+	const stream = new ReadableStream({
+		async start(controller) {
+			const TERMINAL = new Set(['complete', 'failed']);
+			const POLL_MS = 2000;
+			let lastStatus = '';
+			let lastPercent = -1;
+
+			const poll = async () => {
+				if (closed) return;
+				try {
+					const row = await db.prepare(
+						'SELECT status, percent, error, output_size, completed_at FROM transform_jobs WHERE job_id = ?',
+					).bind(jobId).first<{ status: string; percent: number | null; error: string | null; output_size: number | null; completed_at: number | null }>();
+
+					if (!row) {
+						controller.enqueue(encoder.encode(`data: ${JSON.stringify({ status: 'not_found', jobId })}\n\n`));
+						controller.close();
+						closed = true;
+						return;
+					}
+
+					const percent = row.percent ?? 0;
+					// Only send if something changed
+					if (row.status !== lastStatus || percent !== lastPercent) {
+						lastStatus = row.status;
+						lastPercent = percent;
+						controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+							status: row.status,
+							percent,
+							error: row.error,
+							outputSize: row.output_size,
+							completedAt: row.completed_at,
+						})}\n\n`));
+					}
+
+					if (TERMINAL.has(row.status)) {
+						controller.close();
+						closed = true;
+						return;
+					}
+
+					// Schedule next poll
+					setTimeout(poll, POLL_MS);
+				} catch {
+					if (!closed) {
+						controller.enqueue(encoder.encode(`data: ${JSON.stringify({ status: 'error', message: 'D1 query failed' })}\n\n`));
+						setTimeout(poll, POLL_MS * 2);
+					}
+				}
+			};
+
+			// Initial send immediately
+			await poll();
+		},
+		cancel() {
+			closed = true;
+		},
+	});
+
+	return new Response(stream, {
+		headers: {
+			'Content-Type': 'text/event-stream',
+			'Cache-Control': 'no-cache',
+			'Connection': 'keep-alive',
+			'X-Accel-Buffering': 'no', // disable nginx buffering if proxied
+		},
+	});
 }

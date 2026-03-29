@@ -38,11 +38,13 @@ export function buildCacheKey(path: string, params: TransformParams, version?: n
 		case 'frame':
 			if (params.time) key += `:t=${params.time}`;
 			if (params.format) key += `:f=${params.format}`;
+			if (params.fit) key += `:fit=${params.fit}`;
 			break;
 		case 'spritesheet':
 			if (params.time) key += `:t=${params.time}`;
 			if (params.duration) key += `:d=${params.duration}`;
 			if (params.imageCount) key += `:ic=${params.imageCount}`;
+			if (params.fit) key += `:fit=${params.fit}`;
 			break;
 		case 'audio':
 			if (params.time) key += `:t=${params.time}`;
@@ -50,6 +52,10 @@ export function buildCacheKey(path: string, params: TransformParams, version?: n
 			if (params.format) key += `:f=${params.format}`;
 			break;
 		default: // video
+			if (params.time) key += `:t=${params.time}`;
+			if (params.duration) key += `:d=${params.duration}`;
+			if (params.fit) key += `:fit=${params.fit}`;
+			if (params.audio !== undefined) key += `:a=${params.audio}`;
 			if (params.quality) key += `:q=${params.quality}`;
 			if (params.compression) key += `:c=${params.compression}`;
 			break;

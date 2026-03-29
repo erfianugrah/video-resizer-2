@@ -12,6 +12,13 @@
  * ensures the dispatch eventually happens, even after deploys kill containers.
  *
  * No DO status checks, no premature acks. Stateless and idempotent.
+ *
+ * Status transitions:
+ *   pending → downloading (first attempt only, not on retries)
+ *   downloading/transcoding/uploading → (driven by container progress reports)
+ *   → complete (R2 result found)
+ *   → failed (terminal: binding missing, max retries exhausted via DLQ)
+ *   Non-terminal retry errors do NOT set 'failed' — they keep the current status.
  */
 import type { Env } from '../types';
 import type { JobMessage } from '../transform/job';
@@ -67,8 +74,12 @@ export async function handleQueue(
 				env.FFMPEG_CONTAINER.idFromName(instanceKey),
 			);
 
-			// Update D1 status
-			if (env.ANALYTICS) updateJobStatus(env.ANALYTICS, job.jobId, 'downloading');
+			// Only transition pending → downloading on first attempt.
+			// Don't overwrite in-progress status (transcoding/uploading) on retries —
+			// the container progress reports drive those transitions.
+			if (env.ANALYTICS && message.attempts <= 1) {
+				updateJobStatus(env.ANALYTICS, job.jobId, 'downloading');
+			}
 
 			const resp = await container.fetch('http://container/transform-url', {
 				method: 'POST',
@@ -91,14 +102,38 @@ export async function handleQueue(
 			} else {
 				const body = await resp.text().catch(() => '');
 				log.warn('Queue: container rejected', { jobId: job.jobId, status: resp.status, body: body.slice(0, 200) });
+				// Don't mark 'failed' — this is a retryable error. The container may
+				// have been starting up or the DO was busy. Keep current D1 status.
 				message.retry({ delaySeconds: 30 });
-				if (env.ANALYTICS) updateJobStatus(env.ANALYTICS, job.jobId, 'failed');
 			}
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
 			log.error('Queue: job error', { jobId: job.jobId, error: errorMsg, attempt: message.attempts });
+			// Don't mark 'failed' on retryable exceptions. The DLQ consumer
+			// handles terminal failure when all retries are exhausted.
 			message.retry({ delaySeconds: 60 });
-			if (env.ANALYTICS) failJob(env.ANALYTICS, job.jobId, errorMsg);
 		}
+	}
+}
+
+/**
+ * DLQ consumer — handles messages that exhausted all retries.
+ * Marks jobs as terminal 'failed' in D1.
+ */
+export async function handleDLQ(
+	batch: MessageBatch<JobMessage>,
+	env: Env,
+): Promise<void> {
+	for (const message of batch.messages) {
+		const job = message.body;
+		log.error('DLQ: job exhausted all retries', {
+			jobId: job.jobId,
+			path: job.path,
+			attempts: message.attempts,
+		});
+		if (env.ANALYTICS) {
+			failJob(env.ANALYTICS, job.jobId, `Exhausted all retries after ${message.attempts} attempts`);
+		}
+		message.ack();
 	}
 }

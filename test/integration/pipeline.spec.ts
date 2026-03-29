@@ -159,14 +159,14 @@ describe('integration/pipeline', () => {
 
 	describe('cache key consistency', () => {
 		it('same derivative → same cache key regardless of original params', () => {
-			// ?derivative=tablet
+			// ?derivative=tablet (resolves to width=1280, height=720, fit=contain)
 			const qs1 = new URLSearchParams('derivative=tablet');
 			let p1 = parseParams(translateAkamaiParams(qs1).params);
 			p1 = resolveDerivative(p1, TEST_CONFIG.derivatives);
 			p1 = { ...p1, compression: 'auto' };
 
-			// ?width=1280&height=720 (same dims as tablet)
-			const qs2 = new URLSearchParams('width=1280&height=720');
+			// ?width=1280&height=720&fit=contain (same resolved params as tablet)
+			const qs2 = new URLSearchParams('width=1280&height=720&fit=contain');
 			let p2 = parseParams(translateAkamaiParams(qs2).params);
 			p2 = resolveDerivative(p2, TEST_CONFIG.derivatives);
 			p2 = { ...p2, compression: 'auto' };

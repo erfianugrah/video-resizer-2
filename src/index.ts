@@ -15,14 +15,14 @@ import { cdnCgiPassthrough, nonVideoPassthrough } from './middleware/passthrough
 
 // Handlers
 import { getConfig, postConfig, postCacheBust, getAnalytics, getAnalyticsErrors } from './handlers/admin';
-import { postContainerResult, getR2Source } from './handlers/internal';
+import { getR2Source } from './handlers/internal';
 import { transformHandler } from './handlers/transform';
-import { wsJobHandler, listJobsHandler, getJobStatus } from './handlers/jobs';
+import { listJobsHandler, sseJobProgress } from './handlers/jobs';
 
 // Durable Object + analytics cleanup
 import { FFmpegContainer, ContainerProxy } from './transform/container';
-import { TransformJobDO } from './transform/job';
-import { handleQueue } from './queue/consumer';
+// TransformJobDO removed — replaced by D1 + SSE for job progress
+import { handleQueue, handleDLQ } from './queue/consumer';
 import { CLEANUP_SQL } from './analytics/middleware';
 import * as log from './log';
 import type { JobMessage } from './transform/job';
@@ -52,9 +52,8 @@ app.get('/admin/analytics/errors', getAnalyticsErrors);
 
 // ── Job management routes ────────────────────────────────────────────────
 
-app.get('/ws/job/:id', wsJobHandler);
 app.get('/admin/jobs', listJobsHandler);
-app.get('/admin/jobs/:id', getJobStatus);
+app.get('/sse/job/:id', sseJobProgress);
 
 // ── Dashboard (static assets, auth-gated) ────────────────────────────────
 
@@ -66,7 +65,8 @@ app.get('/admin/dashboard/*', dashboardAuth);
 
 // ── Internal routes ──────────────────────────────────────────────────────
 
-app.post('/internal/container-result', postContainerResult);
+// postContainerResult removed — the container outbound handler (container.ts:148)
+// intercepts POST /internal/container-result before it reaches the Hono router.
 app.get('/internal/r2-source', getR2Source);
 
 // ── Transform handler (catch-all) ────────────────────────────────────────
@@ -75,14 +75,18 @@ app.get('*', transformHandler);
 
 // ── Export ────────────────────────────────────────────────────────────────
 
-export { FFmpegContainer, ContainerProxy, TransformJobDO };
+export { FFmpegContainer, ContainerProxy };
 
 export default {
 	fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		return app.fetch(request, env, ctx);
 	},
 	async queue(batch: MessageBatch<JobMessage>, env: Env, ctx: ExecutionContext) {
-		await handleQueue(batch, env);
+		if (batch.queue === 'video-transform-dlq') {
+			await handleDLQ(batch, env);
+		} else {
+			await handleQueue(batch, env);
+		}
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
 		if (controller.cron === '0 0 * * sun' && env.ANALYTICS) {

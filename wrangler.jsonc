@@ -47,17 +47,22 @@
 				"max_concurrency": 2,
 				"dead_letter_queue": "video-transform-dlq",
 			},
+			{
+				"queue": "video-transform-dlq",
+				"max_batch_size": 10,
+				"max_retries": 0,
+			},
 		],
 	},
 	"durable_objects": {
 		"bindings": [
 			{ "name": "FFMPEG_CONTAINER", "class_name": "FFmpegContainer" },
-			{ "name": "TRANSFORM_JOB", "class_name": "TransformJobDO" },
 		],
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["FFmpegContainer"] },
 		{ "tag": "v2", "new_sqlite_classes": ["TransformJobDO"] },
+		{ "tag": "v3", "deleted_classes": ["TransformJobDO"] },
 	],
 	"routes": [
 		{

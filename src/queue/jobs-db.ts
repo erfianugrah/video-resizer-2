@@ -1,9 +1,9 @@
 /**
  * D1 job registry — tracks container transform jobs for the dashboard.
  *
- * Durable Objects don't have a "list all instances" API, so we use D1
- * as a queryable registry. The DO is still the source of truth for
- * real-time state; D1 is the index for discovery.
+ * D1 is the sole source of truth for job state (no TransformJobDO).
+ * Progress (phase + percent) is written directly by the container
+ * outbound handler and read by the SSE endpoint for real-time updates.
  */
 import * as log from '../log';
 
@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS transform_jobs (
   started_at   INTEGER,
   completed_at INTEGER,
   error        TEXT,
-  output_size  INTEGER
+  output_size  INTEGER,
+  percent      INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON transform_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON transform_jobs(created_at);
@@ -59,13 +60,20 @@ export function registerJob(
 }
 
 const UPDATE_STATUS_SQL = `UPDATE transform_jobs SET status = ?, started_at = COALESCE(started_at, ?) WHERE job_id = ?`;
-const COMPLETE_SQL = `UPDATE transform_jobs SET status = 'complete', completed_at = ?, output_size = ? WHERE job_id = ?`;
+const UPDATE_PROGRESS_SQL = `UPDATE transform_jobs SET status = ?, percent = ?, started_at = COALESCE(started_at, ?) WHERE job_id = ?`;
+const COMPLETE_SQL = `UPDATE transform_jobs SET status = 'complete', completed_at = ?, output_size = ?, percent = 100 WHERE job_id = ?`;
 const FAIL_SQL = `UPDATE transform_jobs SET status = 'failed', completed_at = ?, error = ? WHERE job_id = ?`;
 
 /** Update job status in D1. Fire-and-forget. */
 export function updateJobStatus(db: D1Database, jobId: string, status: string): void {
 	db.prepare(UPDATE_STATUS_SQL).bind(status, Date.now(), jobId).run()
 		.catch((err) => log.error('Job status update failed', { error: err instanceof Error ? err.message : String(err) }));
+}
+
+/** Update job status + percent progress in D1. Fire-and-forget. */
+export function updateJobProgress(db: D1Database, jobId: string, status: string, percent: number): void {
+	db.prepare(UPDATE_PROGRESS_SQL).bind(status, percent, Date.now(), jobId).run()
+		.catch((err) => log.error('Job progress update failed', { error: err instanceof Error ? err.message : String(err) }));
 }
 
 /** Mark job complete in D1. Fire-and-forget. */
@@ -95,6 +103,7 @@ export interface JobRow {
 	completed_at: number | null;
 	error: string | null;
 	output_size: number | null;
+	percent: number | null;
 }
 
 const LIST_JOBS_SQL = `

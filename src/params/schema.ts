@@ -256,15 +256,17 @@ export function needsContainer(params: TransformParams): boolean {
 	return false;
 }
 
-/** Parse a duration string like "5s", "2m", "1m30s" into total seconds. */
+/** Parse a duration string like "5s", "2m", "1m30s", "1h30m" into total seconds. */
 function parseDurationSeconds(duration: string): number {
 	let total = 0;
-	const minMatch = duration.match(/(\d+(?:\.\d+)?)m/);
+	const hourMatch = duration.match(/(\d+(?:\.\d+)?)h/);
+	const minMatch = duration.match(/(\d+(?:\.\d+)?)m(?!s)/); // negative lookahead: don't match 'ms'
 	const secMatch = duration.match(/(\d+(?:\.\d+)?)s/);
+	if (hourMatch) total += parseFloat(hourMatch[1]) * 3600;
 	if (minMatch) total += parseFloat(minMatch[1]) * 60;
 	if (secMatch) total += parseFloat(secMatch[1]);
 	// If only a bare number, treat as seconds
-	if (!minMatch && !secMatch) {
+	if (!hourMatch && !minMatch && !secMatch) {
 		const n = parseFloat(duration);
 		if (Number.isFinite(n)) total = n;
 	}

@@ -8,7 +8,7 @@
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export function log(level: LogLevel, msg: string, data?: Record<string, unknown>): void {
-	console.log(JSON.stringify({ level, msg, ts: Date.now(), ...data }));
+	console.log(JSON.stringify({ ...data, level, msg, ts: Date.now() }));
 }
 
 export const debug = (msg: string, data?: Record<string, unknown>) => log('debug', msg, data);

@@ -103,4 +103,56 @@ describe('cache/key', () => {
 		const params10: TransformParams = { mode: 'spritesheet', width: 640, imageCount: 10 };
 		expect(buildCacheKey('/test.mp4', params5)).not.toBe(buildCacheKey('/test.mp4', params10));
 	});
+
+	// Fix 1: video mode must include time, duration, fit, audio
+	it('includes time and duration in video mode cache key', () => {
+		const params: TransformParams = { width: 1280, time: '5s', duration: '10s' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toContain(':t=5s');
+		expect(key).toContain(':d=10s');
+	});
+
+	it('different time values produce different video cache keys', () => {
+		const a: TransformParams = { width: 640, time: '5s' };
+		const b: TransformParams = { width: 640, time: '30s' };
+		expect(buildCacheKey('/test.mp4', a)).not.toBe(buildCacheKey('/test.mp4', b));
+	});
+
+	it('different duration values produce different video cache keys', () => {
+		const a: TransformParams = { width: 640, duration: '5s' };
+		const b: TransformParams = { width: 640, duration: '30s' };
+		expect(buildCacheKey('/test.mp4', a)).not.toBe(buildCacheKey('/test.mp4', b));
+	});
+
+	it('includes fit in video mode cache key', () => {
+		const params: TransformParams = { width: 1280, height: 720, fit: 'cover' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toContain(':fit=cover');
+	});
+
+	it('different fit values produce different video cache keys', () => {
+		const a: TransformParams = { width: 1280, height: 720, fit: 'cover' };
+		const b: TransformParams = { width: 1280, height: 720, fit: 'contain' };
+		expect(buildCacheKey('/test.mp4', a)).not.toBe(buildCacheKey('/test.mp4', b));
+	});
+
+	it('includes audio in video mode cache key', () => {
+		const withAudio: TransformParams = { width: 640, audio: true };
+		const noAudio: TransformParams = { width: 640, audio: false };
+		expect(buildCacheKey('/test.mp4', withAudio)).toContain(':a=true');
+		expect(buildCacheKey('/test.mp4', noAudio)).toContain(':a=false');
+		expect(buildCacheKey('/test.mp4', withAudio)).not.toBe(buildCacheKey('/test.mp4', noAudio));
+	});
+
+	it('includes fit in frame mode cache key', () => {
+		const params: TransformParams = { mode: 'frame', width: 320, time: '2s', format: 'jpg', fit: 'cover' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toContain(':fit=cover');
+	});
+
+	it('includes fit in spritesheet mode cache key', () => {
+		const params: TransformParams = { mode: 'spritesheet', width: 640, time: '0s', duration: '10s', fit: 'cover' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toContain(':fit=cover');
+	});
 });

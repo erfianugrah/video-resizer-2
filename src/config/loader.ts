@@ -104,6 +104,19 @@ export async function loadConfig(kv: KVNamespace | undefined): Promise<AppConfig
 			configInput.version = kvConfig.version;
 		}
 
+		// Size limits
+		if (kvConfig.cdnCgiSizeLimit !== undefined) {
+			configInput.cdnCgiSizeLimit = kvConfig.cdnCgiSizeLimit;
+		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).cdnCgiSizeLimit !== undefined) {
+			configInput.cdnCgiSizeLimit = (kvConfig.video as Record<string, unknown>).cdnCgiSizeLimit;
+		}
+
+		if (kvConfig.bindingSizeLimit !== undefined) {
+			configInput.bindingSizeLimit = kvConfig.bindingSizeLimit;
+		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).bindingSizeLimit !== undefined) {
+			configInput.bindingSizeLimit = (kvConfig.video as Record<string, unknown>).bindingSizeLimit;
+		}
+
 		const result = AppConfigSchema.safeParse(configInput);
 		if (result.success) {
 			cachedConfig = result.data;

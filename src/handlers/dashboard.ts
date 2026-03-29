@@ -18,19 +18,7 @@ type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
 const COOKIE_NAME = 'vr2_session';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-/** Timing-safe string comparison to prevent timing attacks. */
-function timingSafeEqual(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
-	const encoder = new TextEncoder();
-	const bufA = encoder.encode(a);
-	const bufB = encoder.encode(b);
-	// Use constant-time comparison via crypto.subtle
-	let result = 0;
-	for (let i = 0; i < bufA.length; i++) {
-		result |= bufA[i] ^ bufB[i];
-	}
-	return result === 0;
-}
+import { timingSafeEqual } from '../util';
 
 /** Derive an HMAC key from the API token. */
 async function getHmacKey(token: string): Promise<CryptoKey> {

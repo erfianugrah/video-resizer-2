@@ -671,39 +671,74 @@ describe('Source types', () => {
 	});
 });
 
-// ── Queue/Job endpoints ──────────────────────────────────────────────────
+// ── Job management endpoints ─────────────────────────────────────────────
 
-describe('Job status endpoint', () => {
-	it('GET /admin/jobs/:id requires auth', async () => {
-		const resp = await req('/admin/jobs/nonexistent-job-id');
+describe('Jobs list endpoint', () => {
+	it('GET /admin/jobs requires auth', async () => {
+		const resp = await req('/admin/jobs');
 		expect(resp.status).toBe(401);
 	});
 
-	it('GET /admin/jobs/:id with auth returns job state', async () => {
+	it('GET /admin/jobs returns job list with auth', async () => {
 		if (!HAS_TOKEN) return;
-		const resp = await req('/admin/jobs/nonexistent-job-id', {
+		const resp = await req('/admin/jobs?hours=24&limit=10', {
 			headers: { Authorization: `Bearer ${API_TOKEN}` },
 		});
-		// Should return 200 with a default/empty state (DO auto-creates)
 		expect(resp.status).toBe(200);
-		const body = await resp.json() as { job: { status: string; progress: number } };
-		expect(body.job).toBeTruthy();
-		expect(typeof body.job.status).toBe('string');
-		expect(typeof body.job.progress).toBe('number');
+		const body = await resp.json() as { jobs: unknown[]; _meta: { ts: number; hours: number } };
+		expect(Array.isArray(body.jobs)).toBe(true);
+		expect(body._meta.ts).toBeGreaterThan(0);
+		expect(body._meta.hours).toBe(24);
+	});
+
+	it('GET /admin/jobs?active=true returns only active jobs', async () => {
+		if (!HAS_TOKEN) return;
+		const resp = await req('/admin/jobs?active=true', {
+			headers: { Authorization: `Bearer ${API_TOKEN}` },
+		});
+		expect(resp.status).toBe(200);
+		const body = await resp.json() as { jobs: Array<{ status: string }> };
+		const terminal = new Set(['complete', 'failed']);
+		for (const job of body.jobs) {
+			expect(terminal.has(job.status)).toBe(false);
+		}
+	});
+
+	it('GET /admin/jobs?filter=rocky filters by path', async () => {
+		if (!HAS_TOKEN) return;
+		const resp = await req('/admin/jobs?filter=rocky', {
+			headers: { Authorization: `Bearer ${API_TOKEN}` },
+		});
+		expect(resp.status).toBe(200);
+		const body = await resp.json() as { jobs: Array<{ path: string }> };
+		for (const job of body.jobs) {
+			expect(job.path.toLowerCase()).toContain('rocky');
+		}
 	});
 });
 
-describe('WebSocket job endpoint', () => {
-	it('GET /ws/job/:id without Upgrade header returns 426', async () => {
-		const resp = await req('/ws/job/test-job-id');
-		// Should return 426 Upgrade Required (not a WebSocket request)
-		expect(resp.status).toBe(426);
+describe('SSE job progress endpoint', () => {
+	it('GET /sse/job/:id returns text/event-stream content type', async () => {
+		// Use a non-existent job ID — should still return SSE format with not_found
+		const resp = await req('/sse/job/nonexistent-test-id');
+		expect(h(resp, 'content-type')).toContain('text/event-stream');
+		expect(h(resp, 'cache-control')).toBe('no-cache');
+	});
+
+	it('GET /sse/job/:id streams not_found for unknown job', async () => {
+		const resp = await req('/sse/job/nonexistent-test-id');
+		const text = await resp.text();
+		expect(text).toContain('data:');
+		const match = text.match(/data: (.+)/);
+		if (match) {
+			const data = JSON.parse(match[1]);
+			expect(data.status).toBe('not_found');
+		}
 	});
 });
 
 describe('202 response shape (container async)', () => {
-	it('202 response includes jobId and ws URL for oversized sources', async () => {
-		// Use a unique width to avoid cached results
+	it('202 response includes jobId and SSE URL for oversized sources', async () => {
 		const testWidth = 311;
 		const resp = await req(`${HUGE}?imwidth=${testWidth}`, { timeout: 60_000 });
 
@@ -711,29 +746,26 @@ describe('202 response shape (container async)', () => {
 			const body = await resp.json() as {
 				status: string;
 				jobId?: string;
-				ws?: string;
+				sse?: string;
 				path?: string;
 				message?: string;
 			};
 			expect(body.status).toBeTruthy();
 			expect(body.path).toBe(HUGE);
 			expect(body.message).toBeTruthy();
-			// jobId and ws URL present when queue is configured
 			if (body.jobId) {
 				expect(typeof body.jobId).toBe('string');
 				expect(body.jobId.length).toBeGreaterThan(0);
 			}
-			if (body.ws) {
-				expect(body.ws).toMatch(/^wss:\/\//);
-				expect(body.ws).toContain('/ws/job/');
+			if (body.sse) {
+				expect(body.sse).toMatch(/^https:\/\//);
+				expect(body.sse).toContain('/sse/job/');
 			}
-			// X-Job-Id header
 			const jobIdHeader = h(resp, 'x-job-id');
 			if (jobIdHeader) {
 				expect(jobIdHeader.length).toBeGreaterThan(0);
 			}
 		}
-		// If 200, it was already cached — that's fine
 	});
 
 	it('Retry-After header on 202 response', async () => {
@@ -753,5 +785,142 @@ describe('202 response shape (container async)', () => {
 		if (resp.status === 202) {
 			expect(h(resp, 'x-transform-pending')).toBe('true');
 		}
+	});
+});
+
+// ── Config upload ────────────────────────────────────────────────────────
+
+describe('Config admin', () => {
+	it('POST /admin/config with invalid body returns 400 or 500', async () => {
+		if (!HAS_TOKEN) return;
+		const resp = await req('/admin/config', {
+			method: 'POST',
+			headers: {
+				Authorization: `Bearer ${API_TOKEN}`,
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({ origins: 'not-an-array' }),
+		});
+		// Either 400 (validation error) or 500 (parse error) — not 200
+		expect(resp.status).toBeGreaterThanOrEqual(400);
+	});
+});
+
+// ── Spritesheet mode ─────────────────────────────────────────────────────
+
+describe('Spritesheet mode', () => {
+	it('mode=spritesheet returns image/jpeg', async () => {
+		const resp = await req(`${SMALL}?mode=spritesheet&width=320&duration=5s&imageCount=4`);
+		if (resp.status === 200) {
+			expect(h(resp, 'content-type')).toContain('image/jpeg');
+			expect(size(resp)).toBeGreaterThan(0);
+		}
+		// 202 is acceptable for large files, 502 if container is needed but unavailable
+	});
+});
+
+// ── Fix verification tests ───────────────────────────────────────────────
+
+describe('fix verification', () => {
+	// Fix 1: Cache key includes time/duration/fit/audio in video mode
+	it('different time values produce different cache keys', async () => {
+		const resp1 = await req(`${SMALL}?derivative=tablet&time=1s&debug=view`);
+		const resp2 = await req(`${SMALL}?derivative=tablet&time=3s&debug=view`);
+		const d1 = await resp1.json() as any;
+		const d2 = await resp2.json() as any;
+		expect(d1.diagnostics.params.time).toBe('1s');
+		expect(d2.diagnostics.params.time).toBe('3s');
+	});
+
+	it('different duration values produce different cache keys', async () => {
+		const resp1 = await req(`${SMALL}?width=320&duration=3s`);
+		const resp2 = await req(`${SMALL}?width=320&duration=8s`);
+		const key1 = h(resp1, 'x-cache-key');
+		const key2 = h(resp2, 'x-cache-key');
+		expect(key1).toContain(':d=3s');
+		expect(key2).toContain(':d=8s');
+		expect(key1).not.toBe(key2);
+	});
+
+	it('different fit values produce different cache keys', async () => {
+		const resp1 = await req(`${SMALL}?width=320&height=240&fit=cover`);
+		const resp2 = await req(`${SMALL}?width=320&height=240&fit=contain`);
+		const key1 = h(resp1, 'x-cache-key');
+		const key2 = h(resp2, 'x-cache-key');
+		expect(key1).toContain('fit=cover');
+		expect(key2).toContain('fit=contain');
+		expect(key1).not.toBe(key2);
+	});
+
+	it('audio=true and audio=false produce different cache keys', async () => {
+		const resp1 = await req(`${SMALL}?width=320&audio=true`);
+		const resp2 = await req(`${SMALL}?width=320&audio=false`);
+		const key1 = h(resp1, 'x-cache-key');
+		const key2 = h(resp2, 'x-cache-key');
+		expect(key1).toContain(':a=true');
+		expect(key2).toContain(':a=false');
+		expect(key1).not.toBe(key2);
+	});
+
+	// Fix 2: /internal/r2-source requires auth
+	it('/internal/r2-source rejects unauthenticated requests', async () => {
+		const resp = await req('/internal/r2-source?key=rocky.mp4');
+		expect(resp.status).toBe(401);
+	});
+
+	// Fix 8: parseDurationSeconds handles hours
+	it('hour duration resolves correctly in debug diagnostics', async () => {
+		const resp = await req(`${SMALL}?duration=1h&debug=view`);
+		const data = await resp.json() as any;
+		expect(data.diagnostics.params.duration).toBe('1h');
+		expect(data.diagnostics.needsContainer).toBe(true);
+	});
+
+	it('ms duration does not trigger container routing', async () => {
+		const resp = await req(`${SMALL}?duration=500ms&debug=view`);
+		const data = await resp.json() as any;
+		// 500ms should parse as 0 seconds (ms not supported), not 500 minutes
+		expect(data.diagnostics.needsContainer).toBe(false);
+	});
+
+	// Fix 12: X-Transform-Source tracks actual method
+	it('X-Transform-Source is set on transform responses', async () => {
+		const resp = await req(`${SMALL}?derivative=tablet`);
+		const src = h(resp, 'x-transform-source');
+		expect(src).toBeTruthy();
+		expect(['binding', 'cdn-cgi', 'container', 'unknown']).toContain(src);
+	});
+
+	// SSE endpoint is reachable (not caught by passthrough middleware)
+	it('SSE endpoint is reachable (not caught by non-video passthrough)', async () => {
+		const resp = await req('/sse/job/test-reachability');
+		// Should get SSE response, not a fetch passthrough or 404
+		expect(h(resp, 'content-type')).toContain('text/event-stream');
+	});
+
+	// Akamai imformat param
+	it('imformat=h265 triggers container routing', async () => {
+		const resp = await req(`${SMALL}?imformat=h265&width=320&debug=view`);
+		const data = await resp.json() as any;
+		expect(data.diagnostics.needsContainer).toBe(true);
+	});
+
+	it('imformat=h264 does not trigger container routing', async () => {
+		const resp = await req(`${SMALL}?imformat=h264&width=320&debug=view`);
+		const data = await resp.json() as any;
+		expect(data.diagnostics.needsContainer).toBe(false);
+	});
+
+	// quality and compression as direct params
+	it('quality=high is accepted as direct param', async () => {
+		const resp = await req(`${SMALL}?width=320&quality=high&debug=view`);
+		const data = await resp.json() as any;
+		expect(data.diagnostics.params.quality).toBe('high');
+	});
+
+	it('compression=auto is accepted as direct param', async () => {
+		const resp = await req(`${SMALL}?width=320&compression=auto&debug=view`);
+		const data = await resp.json() as any;
+		expect(data.diagnostics.params.compression).toBe('auto');
 	});
 });

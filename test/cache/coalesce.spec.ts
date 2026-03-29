@@ -13,28 +13,37 @@ describe('cache/coalesce', () => {
 		expect(result).toBeNull();
 	});
 
-	it('returns the same promise for duplicate concurrent requests', async () => {
-		const response = new Response('hello');
-		const promise = Promise.resolve(response);
+	it('returns a completion signal for duplicate concurrent requests', async () => {
+		let resolve!: () => void;
+		const promise = new Promise<void>((r) => {
+			resolve = r;
+		});
 
 		coalescer.set('key1', promise);
-		const joined = coalescer.get('key1');
+		const signal = coalescer.get('key1');
 
-		expect(joined).not.toBeNull();
-		const result = await joined!;
-		expect(await result.text()).toBe('hello');
+		expect(signal).not.toBeNull();
+		// Signal should not resolve yet
+		let resolved = false;
+		signal!.then(() => { resolved = true; });
+		await Promise.resolve(); // flush microtasks
+		expect(resolved).toBe(false);
+
+		resolve();
+		await signal!;
+		expect(resolved).toBe(true);
 	});
 
 	it('cleans up after promise resolves', async () => {
-		let resolve!: (r: Response) => void;
-		const promise = new Promise<Response>((r) => {
+		let resolve!: () => void;
+		const promise = new Promise<void>((r) => {
 			resolve = r;
 		});
 
 		coalescer.set('key1', promise);
 		expect(coalescer.get('key1')).not.toBeNull();
 
-		resolve(new Response('done'));
+		resolve();
 		await promise;
 
 		// After cleanup, key should be gone
@@ -45,9 +54,9 @@ describe('cache/coalesce', () => {
 	it('evicts oldest entries when maxSize exceeded', () => {
 		const small = new RequestCoalescer({ maxSize: 2, ttlMs: 60000 });
 
-		small.set('a', Promise.resolve(new Response()));
-		small.set('b', Promise.resolve(new Response()));
-		small.set('c', Promise.resolve(new Response())); // should evict 'a'
+		small.set('a', Promise.resolve());
+		small.set('b', Promise.resolve());
+		small.set('c', Promise.resolve()); // should evict 'a'
 
 		expect(small.get('a')).toBeNull();
 		expect(small.get('b')).not.toBeNull();
@@ -55,8 +64,18 @@ describe('cache/coalesce', () => {
 	});
 
 	it('reports size correctly', () => {
-		coalescer.set('a', Promise.resolve(new Response()));
-		coalescer.set('b', Promise.resolve(new Response()));
+		coalescer.set('a', Promise.resolve());
+		coalescer.set('b', Promise.resolve());
 		expect(coalescer.size).toBe(2);
+	});
+
+	it('expires entries after TTL', async () => {
+		const fast = new RequestCoalescer({ maxSize: 100, ttlMs: 10 });
+		fast.set('key1', Promise.resolve());
+		expect(fast.get('key1')).not.toBeNull();
+
+		// Wait for TTL to expire
+		await new Promise((r) => setTimeout(r, 20));
+		expect(fast.get('key1')).toBeNull();
 	});
 });

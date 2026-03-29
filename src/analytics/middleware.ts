@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS transform_log (
 CREATE INDEX IF NOT EXISTS idx_log_ts ON transform_log(ts);
 CREATE INDEX IF NOT EXISTS idx_log_status ON transform_log(status);
 
+DROP TABLE IF EXISTS transform_jobs;
 CREATE TABLE IF NOT EXISTS transform_jobs (
   job_id       TEXT PRIMARY KEY,
   path         TEXT NOT NULL,
@@ -97,7 +98,8 @@ CREATE TABLE IF NOT EXISTS transform_jobs (
   started_at   INTEGER,
   completed_at INTEGER,
   error        TEXT,
-  output_size  INTEGER
+  output_size  INTEGER,
+  percent      INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON transform_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON transform_jobs(created_at);
