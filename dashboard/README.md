@@ -1,43 +1,40 @@
-# Astro Starter Kit: Minimal
+# video-resizer dashboard
 
-```sh
-npm create astro@latest -- --template minimal
+Admin dashboard for the video-resizer Cloudflare Worker. Astro 6 + React 19 + Radix UI + Tailwind CSS v4.
+
+## Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Framework | Astro 6 (static output) + React 19 |
+| Styling | Tailwind CSS v4, Lovelace dark palette |
+| UI Primitives | Radix UI (Tabs, Tooltip, Slot) + CVA variants |
+| Icons | lucide-react |
+| Class Merging | clsx + tailwind-merge (`cn()`) |
+
+## Structure
+
+```
+src/
+  layouts/Layout.astro        # HTML shell, global CSS import
+  pages/index.astro           # Single page, mounts <Dashboard client:load />
+  styles/global.css            # Lovelace palette, shadcn CSS vars, animations
+  lib/
+    utils.ts                   # cn(), copyToClipboard, BASE, status colors, formatters
+    typography.ts              # T object — shared text style tokens
+  components/
+    Dashboard.tsx              # Root: header, token input, Radix Tabs
+    AnalyticsTab.tsx            # Stats, breakdowns, error table, skeletons
+    JobsTab.tsx                 # SSE progress, polling, filtering, expandable rows
+    DebugTab.tsx                # URL debugger, diagnostics, response headers
+    ui/                         # Reusable primitives
+      button.tsx, card.tsx, badge.tsx, table.tsx,
+      tabs.tsx, input.tsx, skeleton.tsx, tooltip.tsx
 ```
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+## Commands
 
-## 🚀 Project Structure
-
-Inside of your Astro project, you'll see the following folders and files:
-
-```text
-/
-├── public/
-├── src/
-│   └── pages/
-│       └── index.astro
-└── package.json
-```
-
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
-
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
-
-Any static assets, like images, can be placed in the `public/` directory.
-
-## 🧞 Commands
-
-All commands are run from the root of the project, from a terminal:
-
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+| Command | Action |
+|---------|--------|
+| `npm run dev` | Local dev server at localhost:4321 |
+| `npm run build` | Build to `./dist/` for Worker ASSETS binding |

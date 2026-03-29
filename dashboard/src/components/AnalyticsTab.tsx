@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { BASE, StatCard, BreakdownTable, ErrorBanner, formatTime } from './shared';
+import { RefreshCw, Activity, CheckCircle2, XCircle, Zap, Clock, TrendingUp, Loader2 } from 'lucide-react';
+import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
+import { Button } from './ui/button';
+import { Badge } from './ui/badge';
+import { Skeleton } from './ui/skeleton';
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from './ui/table';
+import { T } from '@/lib/typography';
+import { cn, BASE, formatTime } from '@/lib/utils';
 
 interface AnalyticsSummary {
 	total: number;
@@ -26,16 +33,122 @@ interface AnalyticsError {
 
 const ADMIN_PATH_RE = /^\/(admin|internal|ws|sse)\//;
 
+const HOURS_OPTIONS = [
+	{ value: 1, label: '1h' },
+	{ value: 6, label: '6h' },
+	{ value: 12, label: '12h' },
+	{ value: 24, label: '24h' },
+	{ value: 48, label: '48h' },
+	{ value: 168, label: '7d' },
+];
+
+// ── Stat Card ────────────────────────────────────────────────────────
+
+function StatCard({
+	label,
+	value,
+	icon: Icon,
+	color,
+	delay = 0,
+}: {
+	label: string;
+	value: string | number;
+	icon: React.ElementType;
+	color: string;
+	delay?: number;
+}) {
+	return (
+		<Card className="animate-fade-in-up opacity-0" style={{ animationDelay: `${delay}ms` }}>
+			<CardContent className="p-5">
+				<div className="flex items-center justify-between mb-3">
+					<span className={T.statLabelUpper}>{label}</span>
+					<div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', color)}>
+						<Icon className="h-4 w-4" />
+					</div>
+				</div>
+				<div className={T.statValue}>{value}</div>
+			</CardContent>
+		</Card>
+	);
+}
+
+// ── Breakdown Card ───────────────────────────────────────────────────
+
+function BreakdownCard({ title, rows }: { title: string; rows: [string, number][] }) {
+	if (!rows.length) return null;
+	const max = Math.max(...rows.map(([, v]) => v));
+	return (
+		<Card>
+			<CardHeader className="pb-3">
+				<CardTitle className={T.cardTitle}>{title}</CardTitle>
+			</CardHeader>
+			<CardContent>
+				<div className="space-y-2">
+					{rows.map(([label, count]) => (
+						<div key={label} className="flex items-center gap-3">
+							<span className="w-24 shrink-0 truncate font-data text-xs text-muted-foreground">{label}</span>
+							<div className="flex-1 h-2 rounded-full overflow-hidden bg-muted">
+								<div
+									className="h-full rounded-full bg-lv-purple/70 transition-all duration-500"
+									style={{ width: `${(count / max) * 100}%` }}
+								/>
+							</div>
+							<span className="w-12 text-right font-data text-xs tabular-nums text-muted-foreground">{count}</span>
+						</div>
+					))}
+				</div>
+			</CardContent>
+		</Card>
+	);
+}
+
+// ── Loading Skeleton ─────────────────────────────────────────────────
+
+function AnalyticsSkeleton() {
+	return (
+		<div className="space-y-6">
+			<div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+				{Array.from({ length: 4 }).map((_, i) => (
+					<Card key={i}>
+						<CardContent className="p-5 space-y-3">
+							<div className="flex items-center justify-between">
+								<Skeleton className="h-3 w-20" />
+								<Skeleton className="h-8 w-8 rounded-lg" />
+							</div>
+							<Skeleton className="h-8 w-24" />
+						</CardContent>
+					</Card>
+				))}
+			</div>
+			<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+				{Array.from({ length: 4 }).map((_, i) => (
+					<Card key={i}>
+						<CardContent className="p-6 space-y-3">
+							<Skeleton className="h-4 w-32" />
+							<Skeleton className="h-2 w-full" />
+							<Skeleton className="h-2 w-3/4" />
+							<Skeleton className="h-2 w-1/2" />
+						</CardContent>
+					</Card>
+				))}
+			</div>
+		</div>
+	);
+}
+
+// ── Main Component ───────────────────────────────────────────────────
+
 export default function AnalyticsTab({ token }: { token: string }) {
 	const [hours, setHours] = useState(24);
 	const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
 	const [errors, setErrors] = useState<AnalyticsError[]>([]);
 	const [loading, setLoading] = useState(false);
+	const [initialLoad, setInitialLoad] = useState(true);
 	const [error, setError] = useState('');
 	const [showAdminErrors, setShowAdminErrors] = useState(false);
 
 	const fetchData = useCallback(async () => {
-		if (!token) { setError('Enter API token above'); return; }
+		if (!token) { setError('Enter API token above'); setInitialLoad(false); return; }
 		setLoading(true);
 		setError('');
 		try {
@@ -52,6 +165,7 @@ export default function AnalyticsTab({ token }: { token: string }) {
 			setError(e instanceof Error ? e.message : 'Fetch failed');
 		} finally {
 			setLoading(false);
+			setInitialLoad(false);
 		}
 	}, [token, hours]);
 
@@ -60,88 +174,113 @@ export default function AnalyticsTab({ token }: { token: string }) {
 	const filteredErrors = showAdminErrors ? errors : errors.filter((e) => !ADMIN_PATH_RE.test(e.path));
 
 	return (
-		<div>
-			<div className="flex items-center gap-3 mb-4">
-				<select
-					value={hours}
-					onChange={(e) => setHours(Number(e.target.value))}
-					className="px-3 py-1.5 text-sm rounded-md border"
-					style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', color: 'var(--text)' }}
-				>
-					{[1, 6, 12, 24, 48, 168].map((h) => (
-						<option key={h} value={h}>{h}h</option>
+		<div className="space-y-6">
+			{/* Controls */}
+			<div className="flex items-center gap-2 flex-wrap">
+				<div className="inline-flex rounded-lg border border-border overflow-hidden">
+					{HOURS_OPTIONS.map((opt) => (
+						<button
+							key={opt.value}
+							onClick={() => setHours(opt.value)}
+							className={cn(
+								'px-3 py-1.5 text-xs font-medium transition-colors border-r border-border last:border-r-0',
+								hours === opt.value
+									? 'bg-lv-purple/20 text-lv-purple'
+									: 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+							)}
+						>
+							{opt.label}
+						</button>
 					))}
-				</select>
-				<button
-					onClick={fetchData}
-					disabled={loading}
-					className="px-3 py-1.5 text-sm rounded-md"
-					style={{ background: 'var(--accent)', color: 'white', opacity: loading ? 0.5 : 1 }}
-				>
-					{loading ? 'Loading...' : 'Refresh'}
-				</button>
-				{error && <span className="text-sm" style={{ color: 'var(--error)' }}>{error}</span>}
+				</div>
+				<Button onClick={fetchData} disabled={loading} variant="outline" size="sm" className="gap-1.5">
+					{loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+					Refresh
+				</Button>
+				{error && (
+					<div className="rounded-lg border border-lv-red/30 bg-lv-red/10 px-3 py-1.5 text-xs text-lv-red">
+						{error}
+					</div>
+				)}
 			</div>
 
+			{/* Loading skeleton */}
+			{initialLoad && !error && <AnalyticsSkeleton />}
+
+			{/* Content */}
 			{summary && (
 				<>
-					<div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-						<StatCard label="Total Requests" value={summary.total} />
-						<StatCard label="Success" value={summary.success} color="var(--success)" />
-						<StatCard label="Errors" value={summary.errors} color="var(--error)" />
-						<StatCard label="Cache Hit Rate" value={`${(summary.cacheHitRate * 100).toFixed(1)}%`} color="var(--accent)" />
-					</div>
-					<div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
-						<StatCard label="Avg Latency" value={`${summary.avgLatencyMs ?? 0}ms`} />
-						<StatCard label="p50 Latency" value={`${summary.p50LatencyMs ?? 0}ms`} />
-						<StatCard label="p95 Latency" value={`${summary.p95LatencyMs ?? 0}ms`} />
+					{/* Stat cards */}
+					<div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+						<StatCard label="Total Requests" value={summary.total.toLocaleString()} icon={Activity} color="bg-lv-blue/10 text-lv-blue" delay={0} />
+						<StatCard label="Success" value={summary.success.toLocaleString()} icon={CheckCircle2} color="bg-lv-green/10 text-lv-green" delay={50} />
+						<StatCard label="Errors" value={summary.errors.toLocaleString()} icon={XCircle} color="bg-lv-red/10 text-lv-red" delay={100} />
+						<StatCard label="Cache Hit Rate" value={`${(summary.cacheHitRate * 100).toFixed(1)}%`} icon={Zap} color="bg-lv-purple/10 text-lv-purple" delay={150} />
 					</div>
 
-					<div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-						<BreakdownTable title="By Status" rows={summary.byStatus?.map((r) => [String(r.status), r.count]) ?? []} />
-						<BreakdownTable title="By Origin" rows={summary.byOrigin?.map((r) => [r.origin ?? 'unknown', r.count]) ?? []} />
-						<BreakdownTable title="By Derivative" rows={summary.byDerivative?.map((r) => [r.derivative ?? 'none', r.count]) ?? []} />
-						<BreakdownTable title="By Transform Source" rows={summary.byTransformSource?.map((r) => [r.source ?? 'unknown', r.count]) ?? []} />
+					{/* Latency cards */}
+					<div className="grid grid-cols-3 gap-3">
+						<StatCard label="Avg Latency" value={`${summary.avgLatencyMs ?? 0}ms`} icon={Clock} color="bg-lv-peach/10 text-lv-peach" delay={200} />
+						<StatCard label="p50 Latency" value={`${summary.p50LatencyMs ?? 0}ms`} icon={TrendingUp} color="bg-lv-cyan/10 text-lv-cyan" delay={250} />
+						<StatCard label="p95 Latency" value={`${summary.p95LatencyMs ?? 0}ms`} icon={TrendingUp} color="bg-lv-red/10 text-lv-red" delay={300} />
 					</div>
 
+					{/* Breakdown charts */}
+					<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+						<BreakdownCard title="By Status" rows={summary.byStatus?.map((r) => [String(r.status), r.count]) ?? []} />
+						<BreakdownCard title="By Origin" rows={summary.byOrigin?.map((r) => [r.origin ?? 'unknown', r.count]) ?? []} />
+						<BreakdownCard title="By Derivative" rows={summary.byDerivative?.map((r) => [r.derivative ?? 'none', r.count]) ?? []} />
+						<BreakdownCard title="By Transform Source" rows={summary.byTransformSource?.map((r) => [r.source ?? 'unknown', r.count]) ?? []} />
+					</div>
+
+					{/* Error table */}
 					{errors.length > 0 && (
-						<div className="rounded-lg border p-4" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
-							<div className="flex items-center justify-between mb-3">
-								<h3 className="text-sm font-medium">Recent Errors</h3>
-								<label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-muted)' }}>
-									<input type="checkbox" checked={showAdminErrors} onChange={(e) => setShowAdminErrors(e.target.checked)} />
-									Show admin/internal
-								</label>
-							</div>
-							{filteredErrors.length === 0 ? (
-								<p className="text-xs" style={{ color: 'var(--text-muted)' }}>No transform errors (only admin/internal errors hidden)</p>
-							) : (
-								<div className="overflow-x-auto">
-									<table className="w-full text-xs">
-										<thead>
-											<tr style={{ color: 'var(--text-muted)' }}>
-												<th className="text-left py-1 pr-3">Time</th>
-												<th className="text-left py-1 pr-3">Path</th>
-												<th className="text-left py-1 pr-3">Status</th>
-												<th className="text-left py-1 pr-3">Code</th>
-												<th className="text-right py-1">Latency</th>
-											</tr>
-										</thead>
-										<tbody>
-											{filteredErrors.map((e, i) => (
-												<tr key={i} className="border-t" style={{ borderColor: 'var(--border)' }}>
-													<td className="py-1.5 pr-3" style={{ color: 'var(--text-muted)' }}>{formatTime(e.ts)}</td>
-													<td className="py-1.5 pr-3 font-mono truncate max-w-[200px]">{e.path}</td>
-													<td className="py-1.5 pr-3" style={{ color: 'var(--error)' }}>{e.status}</td>
-													<td className="py-1.5 pr-3 font-mono">{e.errorCode ?? '—'}</td>
-													<td className="py-1.5 text-right" style={{ color: 'var(--text-muted)' }}>{e.durationMs ?? '—'}ms</td>
-												</tr>
-											))}
-										</tbody>
-									</table>
+						<Card>
+							<CardHeader className="pb-3">
+								<div className="flex items-center justify-between">
+									<CardTitle className={T.cardTitle}>Recent Errors</CardTitle>
+									<label className="flex items-center gap-1.5 cursor-pointer">
+										<input
+											type="checkbox"
+											checked={showAdminErrors}
+											onChange={(e) => setShowAdminErrors(e.target.checked)}
+											className="rounded border-border"
+										/>
+										<span className={T.muted}>Show admin/internal</span>
+									</label>
 								</div>
-							)}
-						</div>
+							</CardHeader>
+							<CardContent>
+								{filteredErrors.length === 0 ? (
+									<p className={T.muted}>No transform errors (only admin/internal errors hidden)</p>
+								) : (
+									<Table>
+										<TableHeader>
+											<TableRow>
+												<TableHead className={T.tableCell}>Time</TableHead>
+												<TableHead className={T.tableCell}>Path</TableHead>
+												<TableHead className={T.tableCell}>Status</TableHead>
+												<TableHead className={T.tableCell}>Code</TableHead>
+												<TableHead className={cn(T.tableCell, 'text-right')}>Latency</TableHead>
+											</TableRow>
+										</TableHeader>
+										<TableBody>
+											{filteredErrors.map((e, i) => (
+												<TableRow key={i}>
+													<TableCell className={T.tableCellMono}>{formatTime(e.ts)}</TableCell>
+													<TableCell className={cn(T.tableCellMono, 'truncate max-w-[200px]')}>{e.path}</TableCell>
+													<TableCell>
+														<Badge className="bg-lv-red/20 text-lv-red border-lv-red/30">{e.status}</Badge>
+													</TableCell>
+													<TableCell className={T.tableCellMono}>{e.errorCode ?? '\u2014'}</TableCell>
+													<TableCell className={T.tableCellNumeric}>{e.durationMs ?? '\u2014'}ms</TableCell>
+												</TableRow>
+											))}
+										</TableBody>
+									</Table>
+								)}
+							</CardContent>
+						</Card>
 					)}
 				</>
 			)}

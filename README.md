@@ -61,7 +61,9 @@ container/
   Dockerfile                  # node:22-slim + ffmpeg
   server.mjs                  # HTTP server: /transform, /transform-url, /health
 dashboard/
-  src/components/             # Dashboard.tsx, AnalyticsTab, JobsTab, DebugTab, shared
+  src/components/             # Dashboard.tsx, AnalyticsTab, JobsTab, DebugTab
+  src/components/ui/          # Radix UI primitives (Button, Card, Badge, Table, Tabs, etc.)
+  src/lib/                    # cn(), typography tokens, format helpers, color maps
 scripts/
   smoke.ts                    # Standalone smoke test (84 checks)
 test/                         # 186 unit + 92 E2E + 22 browser tests

@@ -1,21 +1,126 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
-:root {
-	--bg: #0a0a0a;
-	--bg-card: #141414;
-	--bg-hover: #1a1a1a;
-	--border: #262626;
-	--text: #fafafa;
-	--text-muted: #a1a1aa;
-	--accent: #3b82f6;
-	--accent-hover: #2563eb;
-	--success: #22c55e;
-	--error: #ef4444;
-	--warning: #eab308;
+@theme {
+	/* Lovelace palette — warm charcoal base with pastel-neon accents */
+	--color-lovelace-950: #15161e;
+	--color-lovelace-900: #1d1f28;
+	--color-lovelace-800: #282a36;
+	--color-lovelace-700: #343647;
+	--color-lovelace-600: #414457;
+
+	--color-lv-purple: #c574dd;
+	--color-lv-purple-dim: #af43d1;
+	--color-lv-green: #5adecd;
+	--color-lv-green-bright: #17e2c7;
+	--color-lv-red: #f37e96;
+	--color-lv-red-bright: #ff4870;
+	--color-lv-peach: #f1a171;
+	--color-lv-peach-bright: #ff8037;
+	--color-lv-blue: #8796f4;
+	--color-lv-blue-bright: #546eff;
+	--color-lv-cyan: #79e6f3;
+	--color-lv-cyan-bright: #3edced;
+
+	/* shadcn CSS variable mapping */
+	--color-background: #1d1f28;
+	--color-foreground: #fcfcfc;
+	--color-card: #282a36;
+	--color-card-foreground: #fcfcfc;
+	--color-popover: #282a36;
+	--color-popover-foreground: #fcfcfc;
+	--color-primary: #c574dd;
+	--color-primary-foreground: #15161e;
+	--color-secondary: #343647;
+	--color-secondary-foreground: #fcfcfc;
+	--color-muted: #343647;
+	--color-muted-foreground: #bdbdc1;
+	--color-accent: #414457;
+	--color-accent-foreground: #fcfcfc;
+	--color-destructive: #f37e96;
+	--color-destructive-foreground: #ffffff;
+	--color-border: #414457;
+	--color-input: #414457;
+	--color-ring: #c574dd;
+
+	/* Chart colors */
+	--color-chart-1: #c574dd;
+	--color-chart-2: #5adecd;
+	--color-chart-3: #f37e96;
+	--color-chart-4: #f1a171;
+	--color-chart-5: #8796f4;
+
+	/* Radius */
+	--radius: 0.5rem;
 }
 
-body {
-	background: var(--bg);
-	color: var(--text);
-	font-family: 'Inter', system-ui, -apple-system, sans-serif;
+@layer base {
+	* {
+		border-color: var(--color-border);
+	}
+
+	button,
+	[role="button"],
+	a,
+	select,
+	summary {
+		cursor: pointer;
+	}
+
+	body {
+		background-color: var(--color-background);
+		color: var(--color-foreground);
+		font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+		font-size: 16px;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	/* Monospace utility for data-oriented elements */
+	.font-data {
+		font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace,
+			SFMono-Regular, Menlo, Consolas, monospace;
+	}
+
+	/* Scrollbar styling */
+	::-webkit-scrollbar {
+		width: 6px;
+		height: 6px;
+	}
+
+	::-webkit-scrollbar-track {
+		background: var(--color-lovelace-950);
+	}
+
+	::-webkit-scrollbar-thumb {
+		background: var(--color-lovelace-600);
+		border-radius: 3px;
+	}
+
+	::-webkit-scrollbar-thumb:hover {
+		background: var(--color-lv-purple);
+	}
+
+	/* Stat card fade-in animation */
+	@keyframes fadeInUp {
+		from {
+			opacity: 0;
+			transform: translateY(8px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+
+	.animate-fade-in-up {
+		animation: fadeInUp 0.4s ease-out forwards;
+	}
+
+	/* Clickable table row press effect */
+	tr.cursor-pointer {
+		transition: background-color 150ms ease-out;
+	}
+	tr.cursor-pointer:active {
+		background-color: rgba(65, 68, 87, 0.5);
+	}
 }

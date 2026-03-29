@@ -1,5 +1,11 @@
 import { useState } from 'react';
-import { BASE, ErrorBanner, formatBytes } from './shared';
+import { Play, Loader2, Globe, Clock, HardDrive, FileType, Shield } from 'lucide-react';
+import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
+import { Button } from './ui/button';
+import { Badge } from './ui/badge';
+import { Input } from './ui/input';
+import { T } from '@/lib/typography';
+import { cn, BASE, formatBytes } from '@/lib/utils';
 
 interface DiagnosticsResult {
 	diagnostics: {
@@ -14,6 +20,64 @@ interface DiagnosticsResult {
 		resolvedHeight: number | null;
 	};
 }
+
+// ── Response Summary Card ────────────────────────────────────────────
+
+function ResponseSummary({
+	status,
+	size,
+	time,
+	type,
+	cache,
+}: {
+	status: number;
+	size: number;
+	time: number;
+	type: string;
+	cache: string;
+}) {
+	const statusOk = status < 400;
+	const items = [
+		{ icon: Globe, label: 'Status', value: String(status), color: statusOk ? 'text-lv-green' : 'text-lv-red' },
+		{ icon: HardDrive, label: 'Size', value: formatBytes(size), color: 'text-foreground' },
+		{ icon: Clock, label: 'Time', value: `${time}ms`, color: 'text-foreground' },
+		{ icon: FileType, label: 'Type', value: type, color: 'text-foreground' },
+		{ icon: Shield, label: 'Cache', value: cache, color: cache === 'HIT' ? 'text-lv-green' : 'text-muted-foreground' },
+	];
+
+	return (
+		<Card className="animate-fade-in-up opacity-0 md:col-span-2">
+			<CardContent className="p-4">
+				<div className="flex flex-wrap gap-6">
+					{items.map(({ icon: Icon, label, value, color }) => (
+						<div key={label} className="flex items-center gap-2">
+							<Icon className="h-3.5 w-3.5 text-muted-foreground" />
+							<span className={T.muted}>{label}</span>
+							<span className={cn('text-sm font-semibold font-data', color)}>{value}</span>
+						</div>
+					))}
+				</div>
+			</CardContent>
+		</Card>
+	);
+}
+
+// ── Key-Value List ───────────────────────────────────────────────────
+
+function KVList({ items }: { items: { key: string; value: React.ReactNode; color?: string }[] }) {
+	return (
+		<dl className="space-y-1.5">
+			{items.map(({ key, value, color }) => (
+				<div key={key} className="flex justify-between gap-4">
+					<dt className={T.muted}>{key}</dt>
+					<dd className={cn('text-xs font-data text-right truncate max-w-[250px]', color)}>{value}</dd>
+				</div>
+			))}
+		</dl>
+	);
+}
+
+// ── Main Component ───────────────────────────────────────────────────
 
 export default function DebugTab() {
 	const [url, setUrl] = useState('/rocky.mp4?derivative=tablet');
@@ -57,116 +121,114 @@ export default function DebugTab() {
 	};
 
 	return (
-		<div>
-			<div className="flex gap-2 mb-4">
-				<input
-					type="text"
-					value={url}
-					onChange={(e) => setUrl(e.target.value)}
-					onKeyDown={(e) => e.key === 'Enter' && testUrl()}
-					placeholder="/path.mp4?params"
-					className="flex-1 px-3 py-2 text-sm rounded-md border font-mono"
-					style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', color: 'var(--text)' }}
-				/>
-				<button
-					onClick={testUrl}
-					disabled={loading}
-					className="px-4 py-2 text-sm rounded-md font-medium"
-					style={{ background: 'var(--accent)', color: 'white', opacity: loading ? 0.5 : 1 }}
-				>
-					{loading ? 'Testing...' : 'Test'}
-				</button>
+		<div className="space-y-4">
+			{/* URL Input */}
+			<div className="flex gap-2">
+				<div className="relative flex-1">
+					<Globe className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+					<Input
+						type="text"
+						value={url}
+						onChange={(e) => setUrl(e.target.value)}
+						onKeyDown={(e) => e.key === 'Enter' && testUrl()}
+						placeholder="/path.mp4?params"
+						className="pl-8 font-data text-xs"
+						aria-label="URL to debug"
+					/>
+				</div>
+				<Button onClick={testUrl} disabled={loading} className="gap-1.5">
+					{loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+					Test
+				</Button>
 			</div>
 
-			{error && <ErrorBanner message={error} />}
+			{/* Error */}
+			{error && (
+				<div className="rounded-lg border border-lv-red/30 bg-lv-red/10 px-4 py-3 text-sm text-lv-red">
+					{error}
+				</div>
+			)}
 
+			{/* Results */}
 			{(diagnostics || headers.length > 0) && (
 				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 					{responseStatus > 0 && (
-						<div className="rounded-lg border p-4 md:col-span-2" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
-							<h3 className="text-sm font-medium mb-2">Response</h3>
-							<div className="flex gap-6 text-sm">
-								<span>Status: <b style={{ color: responseStatus < 400 ? 'var(--success)' : 'var(--error)' }}>{responseStatus}</b></span>
-								<span>Size: <b>{formatBytes(responseSize)}</b></span>
-								<span>Time: <b>{responseTime}ms</b></span>
-								<span>Type: <b>{headers.find(([k]) => k === 'content-type')?.[1] ?? 'unknown'}</b></span>
-								<span>Cache: <b>{headers.find(([k]) => k === 'cf-cache-status')?.[1] ?? 'n/a'}</b></span>
-							</div>
-						</div>
+						<ResponseSummary
+							status={responseStatus}
+							size={responseSize}
+							time={responseTime}
+							type={headers.find(([k]) => k === 'content-type')?.[1] ?? 'unknown'}
+							cache={headers.find(([k]) => k === 'cf-cache-status')?.[1] ?? 'n/a'}
+						/>
 					)}
 
 					{diagnostics && (
-						<div className="rounded-lg border p-4" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
-							<h3 className="text-sm font-medium mb-3">Param Resolution</h3>
-							<dl className="text-xs space-y-1">
-								{Object.entries(diagnostics.params).map(([k, v]) => (
-									v !== undefined && v !== null && (
-										<div key={k} className="flex justify-between">
-											<dt style={{ color: 'var(--text-muted)' }}>{k}</dt>
-											<dd className="font-mono">{String(v)}</dd>
-										</div>
-									)
-								))}
-							</dl>
+						<Card className="animate-fade-in-up opacity-0" style={{ animationDelay: '50ms' }}>
+							<CardHeader className="pb-3">
+								<CardTitle className={T.cardTitle}>Param Resolution</CardTitle>
+							</CardHeader>
+							<CardContent className="space-y-5">
+								<KVList
+									items={Object.entries(diagnostics.params)
+										.filter(([, v]) => v !== undefined && v !== null)
+										.map(([k, v]) => ({ key: k, value: String(v) }))}
+								/>
 
-							<h3 className="text-sm font-medium mt-4 mb-2">Origin</h3>
-							<dl className="text-xs space-y-1">
-								<div className="flex justify-between">
-									<dt style={{ color: 'var(--text-muted)' }}>name</dt>
-									<dd className="font-mono">{diagnostics.origin.name}</dd>
+								<div>
+									<h4 className={cn(T.sectionLabel, 'mb-2')}>Origin</h4>
+									<KVList items={[
+										{ key: 'name', value: diagnostics.origin.name },
+										{ key: 'sources', value: diagnostics.origin.sources.map((s) => `${s.type}(p${s.priority})`).join(', ') },
+										{
+											key: 'needsContainer',
+											value: String(diagnostics.needsContainer),
+											color: diagnostics.needsContainer ? 'text-lv-peach' : 'text-lv-green',
+										},
+									]} />
 								</div>
-								<div className="flex justify-between">
-									<dt style={{ color: 'var(--text-muted)' }}>sources</dt>
-									<dd className="font-mono">{diagnostics.origin.sources.map((s) => `${s.type}(p${s.priority})`).join(', ')}</dd>
-								</div>
-								<div className="flex justify-between">
-									<dt style={{ color: 'var(--text-muted)' }}>needsContainer</dt>
-									<dd className="font-mono" style={{ color: diagnostics.needsContainer ? 'var(--warning)' : 'var(--success)' }}>
-										{String(diagnostics.needsContainer)}
-									</dd>
-								</div>
-							</dl>
 
-							{diagnostics.captures && Object.keys(diagnostics.captures).length > 0 && (
-								<>
-									<h3 className="text-sm font-medium mt-4 mb-2">Captures</h3>
-									<dl className="text-xs space-y-1">
-										{Object.entries(diagnostics.captures).map(([k, v]) => (
-											<div key={k} className="flex justify-between">
-												<dt style={{ color: 'var(--text-muted)' }}>{k}</dt>
-												<dd className="font-mono">{v}</dd>
-											</div>
-										))}
-									</dl>
-								</>
-							)}
+								{diagnostics.captures && Object.keys(diagnostics.captures).length > 0 && (
+									<div>
+										<h4 className={cn(T.sectionLabel, 'mb-2')}>Captures</h4>
+										<KVList
+											items={Object.entries(diagnostics.captures).map(([k, v]) => ({ key: k, value: v }))}
+										/>
+									</div>
+								)}
 
-							<h3 className="text-sm font-medium mt-4 mb-2">Config</h3>
-							<dl className="text-xs space-y-1">
-								<div className="flex justify-between">
-									<dt style={{ color: 'var(--text-muted)' }}>derivatives</dt>
-									<dd className="font-mono">{diagnostics.config.derivatives.join(', ')}</dd>
+								<div>
+									<h4 className={cn(T.sectionLabel, 'mb-2')}>Config</h4>
+									<KVList items={[
+										{ key: 'derivatives', value: diagnostics.config.derivatives.join(', ') },
+										{
+											key: 'container',
+											value: String(diagnostics.config.containerEnabled),
+											color: diagnostics.config.containerEnabled ? 'text-lv-green' : 'text-muted-foreground',
+										},
+									]} />
 								</div>
-								<div className="flex justify-between">
-									<dt style={{ color: 'var(--text-muted)' }}>container</dt>
-									<dd className="font-mono">{String(diagnostics.config.containerEnabled)}</dd>
-								</div>
-							</dl>
-						</div>
+							</CardContent>
+						</Card>
 					)}
 
 					{headers.length > 0 && (
-						<div className="rounded-lg border p-4" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
-							<h3 className="text-sm font-medium mb-3">Response Headers</h3>
-							<dl className="text-xs space-y-0.5 font-mono">
-								{headers.map(([k, v]) => (
-									<div key={k} className="flex gap-2">
-										<dt className="shrink-0" style={{ color: k.startsWith('x-') ? 'var(--accent)' : 'var(--text-muted)' }}>{k}:</dt>
-										<dd className="truncate">{v}</dd>
-									</div>
-								))}
-							</dl>
-						</div>
+						<Card className="animate-fade-in-up opacity-0" style={{ animationDelay: '100ms' }}>
+							<CardHeader className="pb-3">
+								<CardTitle className={T.cardTitle}>Response Headers</CardTitle>
+							</CardHeader>
+							<CardContent>
+								<dl className="space-y-0.5 font-data text-xs">
+									{headers.map(([k, v]) => (
+										<div key={k} className="flex gap-2">
+											<dt className={cn('shrink-0', k.startsWith('x-') ? 'text-lv-cyan' : 'text-muted-foreground')}>
+												{k}:
+											</dt>
+											<dd className="truncate text-foreground/80">{v}</dd>
+										</div>
+									))}
+								</dl>
+							</CardContent>
+						</Card>
 					)}
 				</div>
 			)}

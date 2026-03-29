@@ -1,67 +1,99 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { BarChart3, Container, Bug, KeyRound, Check, Loader2 } from 'lucide-react';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { TooltipProvider } from './ui/tooltip';
 import AnalyticsTab from './AnalyticsTab';
 import JobsTab from './JobsTab';
 import DebugTab from './DebugTab';
 
-type Tab = 'analytics' | 'jobs' | 'debug';
-
 export default function Dashboard() {
-	const [tab, setTab] = useState<Tab>('analytics');
 	const [token, setToken] = useState('');
 	const [tokenSaved, setTokenSaved] = useState(false);
+	const [saving, setSaving] = useState(false);
 
-	// Hydration-safe: read localStorage only after mount (avoids React error #418)
+	// Hydration-safe: read localStorage only after mount
 	useEffect(() => {
 		const saved = localStorage.getItem('vr2-token') ?? '';
-		if (saved) { setToken(saved); setTokenSaved(true); }
+		if (saved) {
+			setToken(saved);
+			setTokenSaved(true);
+		}
 	}, []);
 
-	const saveToken = () => {
+	const saveToken = useCallback(() => {
 		localStorage.setItem('vr2-token', token);
+		setSaving(true);
 		setTokenSaved(true);
-	};
+		setTimeout(() => setSaving(false), 1000);
+	}, [token]);
 
 	return (
-		<div className="min-h-screen p-4 max-w-6xl mx-auto">
-			<header className="flex items-center justify-between mb-6">
-				<h1 className="text-xl font-semibold tracking-tight">video-resizer-2</h1>
-				<div className="flex items-center gap-2">
-					<input
-						type="password"
-						placeholder="API token"
-						value={token}
-						onChange={(e) => { setToken(e.target.value); setTokenSaved(false); }}
-						onKeyDown={(e) => e.key === 'Enter' && saveToken()}
-						className="px-3 py-1.5 text-sm rounded-md border"
-						style={{ background: 'var(--bg-card)', borderColor: 'var(--border)', color: 'var(--text)' }}
-					/>
-					{!tokenSaved && (
-						<button onClick={saveToken} className="px-3 py-1.5 text-sm rounded-md" style={{ background: 'var(--accent)', color: 'white' }}>
-							Save
-						</button>
-					)}
-				</div>
-			</header>
+		<TooltipProvider>
+			<div className="min-h-screen p-4 md:p-6 max-w-6xl mx-auto">
+				{/* Header */}
+				<header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
+					<div className="flex items-center gap-3">
+						<div className="flex h-8 w-8 items-center justify-center rounded-md bg-lv-purple/10">
+							<svg className="h-5 w-5 text-lv-purple" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+								<rect x="2" y="4" width="20" height="16" rx="2" />
+								<path d="M10 9l5 3-5 3V9z" fill="currentColor" />
+							</svg>
+						</div>
+						<h1 className="text-lg font-semibold tracking-tight">video-resizer</h1>
+					</div>
+					<div className="flex items-center gap-2 w-full sm:w-auto">
+						<div className="relative flex-1 sm:flex-initial sm:w-56">
+							<KeyRound className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+							<Input
+								type="password"
+								placeholder="API token"
+								value={token}
+								onChange={(e) => { setToken(e.target.value); setTokenSaved(false); }}
+								onKeyDown={(e) => e.key === 'Enter' && saveToken()}
+								className="pl-8 font-data text-xs"
+								aria-label="API token"
+							/>
+						</div>
+						{!tokenSaved ? (
+							<Button onClick={saveToken} size="sm">Save</Button>
+						) : (
+							<Button size="sm" variant="ghost" className="text-lv-green pointer-events-none" aria-label="Token saved">
+								{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+							</Button>
+						)}
+					</div>
+				</header>
 
-			<nav className="flex gap-1 mb-6 border-b" style={{ borderColor: 'var(--border)' }}>
-				{(['analytics', 'jobs', 'debug'] as Tab[]).map((t) => (
-					<button
-						key={t}
-						onClick={() => setTab(t)}
-						className="px-4 py-2 text-sm font-medium capitalize transition-colors"
-						style={{
-							borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
-							color: tab === t ? 'var(--text)' : 'var(--text-muted)',
-						}}
-					>
-						{t}
-					</button>
-				))}
-			</nav>
+				{/* Tabs */}
+				<Tabs defaultValue="analytics">
+					<TabsList className="w-full sm:w-auto">
+						<TabsTrigger value="analytics" className="gap-1.5">
+							<BarChart3 className="h-3.5 w-3.5" />
+							Analytics
+						</TabsTrigger>
+						<TabsTrigger value="jobs" className="gap-1.5">
+							<Container className="h-3.5 w-3.5" />
+							Jobs
+						</TabsTrigger>
+						<TabsTrigger value="debug" className="gap-1.5">
+							<Bug className="h-3.5 w-3.5" />
+							Debug
+						</TabsTrigger>
+					</TabsList>
 
-			{tab === 'analytics' && <AnalyticsTab token={token} />}
-			{tab === 'jobs' && <JobsTab token={token} />}
-			{tab === 'debug' && <DebugTab />}
-		</div>
+					<TabsContent value="analytics">
+						<AnalyticsTab token={token} />
+					</TabsContent>
+					<TabsContent value="jobs">
+						<JobsTab token={token} />
+					</TabsContent>
+					<TabsContent value="debug">
+						<DebugTab />
+					</TabsContent>
+				</Tabs>
+			</div>
+		</TooltipProvider>
 	);
 }

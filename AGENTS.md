@@ -48,7 +48,9 @@ src/
   queue/                # consumer + DLQ, jobs-db (D1 CRUD)
   analytics/            # middleware (D1 insert), queries, schema.sql (SSOT)
 container/              # Dockerfile + server.mjs (ffmpeg HTTP server)
-dashboard/              # Astro + React (AnalyticsTab, JobsTab, DebugTab, shared)
+dashboard/              # Astro + React + Radix UI + CVA (Lovelace design system)
+  src/components/ui/    # Primitives: Button, Card, Badge, Table, Tabs, Skeleton, Input
+  src/lib/              # cn(), typography tokens (T), format helpers, color maps
 ```
 
 ## Build / Test

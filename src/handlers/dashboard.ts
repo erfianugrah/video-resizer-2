@@ -77,7 +77,7 @@ const LOGIN_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Dashboard Login</title>
+<title>video-resizer dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;color:#fafafa;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
@@ -93,7 +93,7 @@ button:hover{background:#2563eb}
 </head>
 <body>
 <div class="card">
-<h1>video-resizer-2</h1>
+<h1>video-resizer</h1>
 <p>Enter your API token to access the dashboard.</p>
 <div id="error" class="error"></div>
 <form id="form">
