@@ -63,7 +63,9 @@ export function logAnalyticsEvent(
 }
 
 /**
- * SQL for the weekly cron cleanup — DROP + recreate table.
+ * SQL for the weekly cron cleanup — DROP + recreate tables.
+ * This MUST match src/analytics/schema.sql (the single source of truth).
+ * If you change the schema, update both this constant and the .sql file.
  */
 export const CLEANUP_SQL = `
 DROP TABLE IF EXISTS transform_log;

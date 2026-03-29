@@ -7,27 +7,8 @@
  */
 import * as log from '../log';
 
-// ── Schema (run once via wrangler d1 execute or CLEANUP_SQL) ─────────
-
-export const JOBS_TABLE_SQL = `
-CREATE TABLE IF NOT EXISTS transform_jobs (
-  job_id       TEXT PRIMARY KEY,
-  path         TEXT NOT NULL,
-  origin       TEXT,
-  status       TEXT NOT NULL DEFAULT 'pending',
-  params_json  TEXT,
-  source_url   TEXT,
-  source_type  TEXT,
-  created_at   INTEGER NOT NULL,
-  started_at   INTEGER,
-  completed_at INTEGER,
-  error        TEXT,
-  output_size  INTEGER,
-  percent      INTEGER DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON transform_jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_created ON transform_jobs(created_at);
-`;
+// Schema lives in src/analytics/schema.sql (single source of truth).
+// Run: npx wrangler d1 execute video-resizer-analytics --remote --file=src/analytics/schema.sql
 
 // ── Write operations ─────────────────────────────────────────────────
 
