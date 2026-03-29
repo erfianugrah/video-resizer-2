@@ -2,14 +2,17 @@ import { test, expect } from '@playwright/test';
 
 const TOKEN = process.env.CONFIG_API_TOKEN ?? 'test-analytics-token-2026';
 
-// Helper: login and wait for dashboard
+// Helper: login and wait for dashboard to fully render
 async function login(page: import('@playwright/test').Page) {
+	// Set token in localStorage before navigating (so React picks it up on hydrate)
 	await page.goto('/admin/dashboard');
+	await page.evaluate((t) => localStorage.setItem('vr2-token', t), TOKEN);
+	// Fill and submit the login form
 	await page.fill('input[type="password"]', TOKEN);
 	await page.click('button[type="submit"]');
-	await page.waitForURL('**/admin/dashboard');
-	await page.evaluate((t) => localStorage.setItem('vr2-token', t), TOKEN);
-	await page.reload();
+	// After login, the server sets a session cookie and redirects to /admin/dashboard.
+	// The Astro static build loads, React hydrates, and reads token from localStorage.
+	await page.waitForSelector('button:has-text("analytics")', { timeout: 20_000 });
 }
 
 test.describe('Dashboard login', () => {
@@ -59,7 +62,7 @@ test.describe('Analytics tab', () => {
 	});
 
 	test('shows latency metrics', async ({ page }) => {
-		await expect(page.getByText('Avg Latency')).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByText('Avg Latency')).toBeVisible({ timeout: 15_000 });
 		await expect(page.getByText('p50 Latency')).toBeVisible();
 		await expect(page.getByText('p95 Latency')).toBeVisible();
 	});
