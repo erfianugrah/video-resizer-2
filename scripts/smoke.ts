@@ -654,6 +654,143 @@ test('job: 202 from oversized source includes job metadata', async () => {
 	// 200 = cached from prior run, also ok
 });
 
+// ── Coverage gaps: container-only params, spritesheet, Akamai, direct params ──
+
+test('container param: fps triggers needsContainer via debug', async () => {
+	const r = await GET(`${SMALL}?fps=15&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
+	assertEq(body.diagnostics.params.fps, 15, 'fps param');
+});
+
+test('container param: speed triggers needsContainer via debug', async () => {
+	const r = await GET(`${SMALL}?speed=2&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
+	assertEq(body.diagnostics.params.speed, 2, 'speed param');
+});
+
+test('container param: rotate triggers needsContainer via debug', async () => {
+	const r = await GET(`${SMALL}?rotate=90&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
+	assertEq(body.diagnostics.params.rotate, 90, 'rotate param');
+});
+
+test('container param: crop triggers needsContainer via debug', async () => {
+	const r = await GET(`${SMALL}?crop=100:100:0:0&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
+});
+
+test('container param: bitrate triggers needsContainer via debug', async () => {
+	const r = await GET(`${SMALL}?bitrate=2M&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
+});
+
+test('mode=spritesheet: returns image/jpeg', async () => {
+	const r = await GET(`/rocky.mp4?mode=spritesheet&width=320&duration=5s&imageCount=4`);
+	if (r.status === 200) {
+		assertContains(h(r, 'content-type') ?? '', 'image/jpeg', 'content-type');
+		assertGt(parseInt(h(r, 'content-length') ?? '0', 10), 0, 'has content');
+	}
+	// 202 acceptable for large files, 502 if container needed but unavailable
+});
+
+test('akamai: imformat=h264 does not trigger container', async () => {
+	const r = await GET(`/rocky.mp4?imformat=h264&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, false, 'needsContainer');
+});
+
+test('akamai: imformat=h265 triggers container', async () => {
+	const r = await GET(`/rocky.mp4?imformat=h265&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
+});
+
+test('akamai: imdensity=2 sets dpr param', async () => {
+	const r = await GET(`/rocky.mp4?imdensity=2&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.params.dpr, 2, 'dpr');
+});
+
+test('akamai: f=png shorthand with mode=frame', async () => {
+	const r = await GET(`/rocky.mp4?mode=frame&f=png&w=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.params.format, 'png', 'format');
+	assertEq(body.diagnostics.params.width, 320, 'width');
+});
+
+test('akamai: imref is consumed without error', async () => {
+	const r = await GET(`/rocky.mp4?imref=policy%3Dmobile%2Cwidth%3D1080&imwidth=640&debug=view`);
+	assertEq(r.status, 200, 'status');
+	const body = await r.json() as any;
+	assert(!!body.diagnostics, 'has diagnostics');
+});
+
+test('direct param: quality=high accepted', async () => {
+	const r = await GET(`/rocky.mp4?quality=high&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.params.quality, 'high', 'quality');
+});
+
+test('direct param: compression=high accepted', async () => {
+	const r = await GET(`/rocky.mp4?compression=high&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.params.compression, 'high', 'compression');
+});
+
+test('duration: 1h triggers needsContainer (>60s)', async () => {
+	const r = await GET(`/rocky.mp4?duration=1h&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, true, 'needsContainer');
+});
+
+test('duration: 500ms does not trigger needsContainer', async () => {
+	const r = await GET(`/rocky.mp4?duration=500ms&width=320&debug=view`);
+	const body = await r.json() as any;
+	assertEq(body.diagnostics.needsContainer, false, 'needsContainer');
+});
+
+test('cache key: fit=cover differs from fit=contain', async () => {
+	const r1 = await GET(`/rocky.mp4?width=321&height=241&fit=cover`);
+	const r2 = await GET(`/rocky.mp4?width=321&height=241&fit=contain`);
+	const k1 = h(r1, 'x-cache-key');
+	const k2 = h(r2, 'x-cache-key');
+	assert(k1 !== k2, `keys differ: ${k1} vs ${k2}`);
+	assertContains(k1 ?? '', 'fit=cover', 'k1 has fit=cover');
+	assertContains(k2 ?? '', 'fit=contain', 'k2 has fit=contain');
+});
+
+test('cache key: audio=true differs from audio=false', async () => {
+	const r1 = await GET(`/rocky.mp4?width=322&audio=true`);
+	const r2 = await GET(`/rocky.mp4?width=322&audio=false`);
+	const k1 = h(r1, 'x-cache-key');
+	const k2 = h(r2, 'x-cache-key');
+	assert(k1 !== k2, `keys differ: ${k1} vs ${k2}`);
+});
+
+test('cache key: different duration produces different key', async () => {
+	const r1 = await GET(`/rocky.mp4?width=323&duration=3s`);
+	const r2 = await GET(`/rocky.mp4?width=323&duration=8s`);
+	const k1 = h(r1, 'x-cache-key');
+	const k2 = h(r2, 'x-cache-key');
+	assert(k1 !== k2, `keys differ: ${k1} vs ${k2}`);
+});
+
+test('security: /internal/r2-source rejects unauthenticated', async () => {
+	const r = await GET('/internal/r2-source?key=rocky.mp4');
+	assertEq(r.status, 401, 'status');
+});
+
+test('sse: /sse/job/:id returns not_found for unknown job', async () => {
+	const r = await GET('/sse/job/smoke-nonexistent');
+	const text = await r.text();
+	assertContains(text, 'not_found', 'body contains not_found');
+});
+
 // Container async (725MB) — only with --container flag
 if (includeContainer) {
 	test('container: first request returns 202 or cached result', async () => {

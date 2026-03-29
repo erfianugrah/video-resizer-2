@@ -265,8 +265,8 @@ function parseDurationSeconds(duration: string): number {
 	if (hourMatch) total += parseFloat(hourMatch[1]) * 3600;
 	if (minMatch) total += parseFloat(minMatch[1]) * 60;
 	if (secMatch) total += parseFloat(secMatch[1]);
-	// If only a bare number, treat as seconds
-	if (!hourMatch && !minMatch && !secMatch) {
+	// If only a bare number (no unit suffixes at all), treat as seconds
+	if (!hourMatch && !minMatch && !secMatch && /^\d+(\.\d+)?$/.test(duration)) {
 		const n = parseFloat(duration);
 		if (Number.isFinite(n)) total = n;
 	}
