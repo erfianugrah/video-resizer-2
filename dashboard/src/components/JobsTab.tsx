@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react';
 import { RefreshCw, ChevronRight, Loader2, Search, AlertTriangle, RotateCcw, Trash2 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Button } from './ui/button';
@@ -6,15 +6,18 @@ import { Badge } from './ui/badge';
 import { Input } from './ui/input';
 import { Skeleton } from './ui/skeleton';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from './ui/table';
+import { SegmentedGroup } from './ui/segmented-group';
+import { ErrorBanner } from './ui/error-banner';
 import { T } from '@/lib/typography';
-import { cn, BASE, statusColor, formatBytes, formatDuration, formatTime } from '@/lib/utils';
+import { cn, BASE, HOURS_OPTIONS, statusColor, formatBytes, formatDuration, formatTime } from '@/lib/utils';
 
+/** A single job row as returned by the admin API. */
 interface JobRow {
 	job_id: string;
 	path: string;
 	origin: string | null;
 	status: string;
-	params: Record<string, unknown> | null;
+	params: Record<string, string | number | boolean> | null;
 	source_type: string | null;
 	created_at: number;
 	started_at: number | null;
@@ -25,39 +28,37 @@ interface JobRow {
 }
 
 const ACTIVE_STATUSES = new Set(['pending', 'downloading', 'transcoding', 'uploading']);
-const ALL_STATUSES = ['all', 'active', 'complete', 'failed'] as const;
-type StatusFilter = (typeof ALL_STATUSES)[number];
+const ALL_STATUSES = [
+	{ value: 'all' as const, label: 'All' },
+	{ value: 'active' as const, label: 'Active' },
+	{ value: 'complete' as const, label: 'Complete' },
+	{ value: 'failed' as const, label: 'Failed' },
+];
+type StatusFilter = 'all' | 'active' | 'complete' | 'failed';
 
 const STALE_MS = 25 * 60_000;
 
+/** Check whether an active job has gone stale (no progress for >25 min). */
 function isStale(job: JobRow): boolean {
 	if (!ACTIVE_STATUSES.has(job.status)) return false;
 	const lastActivity = job.started_at ?? job.created_at;
 	return Date.now() - lastActivity > STALE_MS;
 }
 
-const HOURS_OPTIONS = [
-	{ value: 1, label: '1h' },
-	{ value: 6, label: '6h' },
-	{ value: 12, label: '12h' },
-	{ value: 24, label: '24h' },
-	{ value: 48, label: '48h' },
-	{ value: 168, label: '7d' },
-];
-
 const POLL_OPTIONS = [
 	{ value: 5, label: '5s' },
 	{ value: 10, label: '10s' },
 	{ value: 30, label: '30s' },
 	{ value: 60, label: '60s' },
-];
+] as const;
 
 // ── Loading Skeleton ─────────────────────────────────────────────────
 
+/** Placeholder skeleton for the jobs table during initial load. */
 function JobsSkeleton() {
 	return (
 		<Card>
-			<CardContent className="p-6 space-y-3">
+			<CardContent className="p-6 space-y-3" aria-busy="true" aria-label="Loading jobs">
 				{Array.from({ length: 5 }).map((_, i) => (
 					<Skeleton key={i} className="h-10 w-full" />
 				))}
@@ -68,6 +69,7 @@ function JobsSkeleton() {
 
 // ── Status Badge ─────────────────────────────────────────────────────
 
+/** Coloured badge showing a job's current status (or "stale" override). */
 function StatusBadge({ status, stale }: { status: string; stale?: boolean }) {
 	const display = stale ? 'stale' : status;
 	const color = stale ? '#eab308' : statusColor(status);
@@ -90,6 +92,7 @@ function StatusBadge({ status, stale }: { status: string; stale?: boolean }) {
 
 // ── Param Badge ──────────────────────────────────────────────────────
 
+/** Small badge displaying a single key=value parameter. */
 function ParamBadge({ k, v }: { k: string; v: string }) {
 	return (
 		<Badge className="bg-muted text-muted-foreground border-border">
@@ -100,6 +103,7 @@ function ParamBadge({ k, v }: { k: string; v: string }) {
 
 // ── Job Card (active jobs) ───────────────────────────────────────────
 
+/** Card for an active/in-progress job with progress bar and action buttons. */
 function JobCard({ job, stale, onRetry, onDelete, actionLoading }: {
 	job: JobRow;
 	stale: boolean;
@@ -109,9 +113,9 @@ function JobCard({ job, stale, onRetry, onDelete, actionLoading }: {
 }) {
 	const color = stale ? '#eab308' : statusColor(job.status);
 	const percent = job.percent ?? 0;
-	const elapsed = job.started_at
+	const elapsed = Math.max(0, job.started_at
 		? ((job.completed_at ?? Date.now()) - job.started_at) / 1000
-		: (Date.now() - job.created_at) / 1000;
+		: (Date.now() - job.created_at) / 1000);
 
 	return (
 		<Card className="animate-fade-in-up opacity-0">
@@ -142,7 +146,7 @@ function JobCard({ job, stale, onRetry, onDelete, actionLoading }: {
 									size="icon-sm"
 									title="Delete job"
 									disabled={actionLoading === job.job_id}
-									onClick={() => onDelete(job.job_id)}
+									onClick={() => { if (window.confirm(`Delete job ${job.job_id}?`)) onDelete(job.job_id); }}
 									className="text-lv-red hover:text-lv-red"
 								>
 									<Trash2 className="h-3 w-3" />
@@ -154,7 +158,14 @@ function JobCard({ job, stale, onRetry, onDelete, actionLoading }: {
 
 				{/* Progress bar */}
 				{percent > 0 && (
-					<div className="h-1.5 rounded-full overflow-hidden bg-muted mb-2">
+					<div
+						className="h-1.5 rounded-full overflow-hidden bg-muted mb-2"
+						role="progressbar"
+						aria-valuenow={percent}
+						aria-valuemin={0}
+						aria-valuemax={100}
+						aria-label={`Job progress: ${percent}%`}
+					>
 						<div
 							className="h-full rounded-full transition-all duration-500"
 							style={{ width: `${percent}%`, backgroundColor: color }}
@@ -182,7 +193,8 @@ function JobCard({ job, stale, onRetry, onDelete, actionLoading }: {
 
 // ── Main Component ───────────────────────────────────────────────────
 
-export default function JobsTab({ token }: { token: string }) {
+/** Jobs dashboard tab showing active and recent container transform jobs. */
+export function JobsTab({ token }: { token: string }) {
 	const [jobs, setJobs] = useState<JobRow[]>([]);
 	const [filter, setFilter] = useState('');
 	const [debouncedFilter, setDebouncedFilter] = useState('');
@@ -194,6 +206,7 @@ export default function JobsTab({ token }: { token: string }) {
 	const [pollInterval, setPollInterval] = useState(10);
 	const [expandedId, setExpandedId] = useState<string | null>(null);
 	const [actionLoading, setActionLoading] = useState<string | null>(null);
+	const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
 	const sseRefs = useRef<Map<string, EventSource>>(new Map());
 
@@ -215,7 +228,6 @@ export default function JobsTab({ token }: { token: string }) {
 				setError(data.error?.message ?? `HTTP ${resp.status}`);
 				return;
 			}
-			// Remove from local state if deleted, or update status if retried
 			if (action === 'delete') {
 				setJobs((prev) => prev.filter((j) => j.job_id !== jobId));
 			} else {
@@ -245,8 +257,8 @@ export default function JobsTab({ token }: { token: string }) {
 				setError(data.error?.message ?? `HTTP ${resp.status}`);
 				return;
 			}
-			const data = await resp.json() as { resetCount: number };
-			// Refresh job list to reflect changes
+			// Consume response body (resetCount) but we only need the side-effect
+			await resp.json();
 			setJobs((prev) => prev.map((j) =>
 				isStale(j) ? { ...j, status: 'pending', percent: 0, error: null } : j,
 			));
@@ -286,13 +298,32 @@ export default function JobsTab({ token }: { token: string }) {
 		}
 	}, [token, hours, debouncedFilter]);
 
+	// Polling with visibility-aware pause
 	useEffect(() => {
 		fetchJobs();
-		const interval = setInterval(fetchJobs, pollInterval * 1000);
-		return () => clearInterval(interval);
+		let interval = setInterval(fetchJobs, pollInterval * 1000);
+
+		const onVisibilityChange = () => {
+			clearInterval(interval);
+			if (document.visibilityState === 'visible') {
+				fetchJobs();
+				interval = setInterval(fetchJobs, pollInterval * 1000);
+			}
+		};
+		document.addEventListener('visibilitychange', onVisibilityChange);
+
+		return () => {
+			clearInterval(interval);
+			document.removeEventListener('visibilitychange', onVisibilityChange);
+		};
 	}, [fetchJobs, pollInterval]);
 
-	// SSE: connect for active jobs
+	// SSE: connect for active jobs — use a stable dependency based on active job IDs + statuses
+	const sseKey = useMemo(
+		() => jobs.filter((j) => ACTIVE_STATUSES.has(j.status)).map((j) => `${j.job_id}:${j.status}`).join(','),
+		[jobs],
+	);
+
 	useEffect(() => {
 		const active = jobs.filter((j) => ACTIVE_STATUSES.has(j.status));
 		const activeIds = new Set(active.map((j) => j.job_id));
@@ -326,7 +357,8 @@ export default function JobsTab({ token }: { token: string }) {
 			for (const es of sseRefs.current.values()) es.close();
 			sseRefs.current.clear();
 		};
-	}, [jobs.map((j) => `${j.job_id}:${j.status}`).join(',')]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- sseKey is the stable serialization of active jobs
+	}, [sseKey]);
 
 	// Client-side filtering
 	const displayed = jobs.filter((j) => {
@@ -339,12 +371,18 @@ export default function JobsTab({ token }: { token: string }) {
 	const activeJobs = displayed.filter((j) => ACTIVE_STATUSES.has(j.status));
 	const recentJobs = displayed.filter((j) => !ACTIVE_STATUSES.has(j.status));
 
-	const counts = {
+	const counts = useMemo(() => ({
 		all: jobs.length,
 		active: jobs.filter((j) => ACTIVE_STATUSES.has(j.status)).length,
 		complete: jobs.filter((j) => j.status === 'complete').length,
 		failed: jobs.filter((j) => j.status === 'failed').length,
-	};
+	}), [jobs]);
+
+	// Build status options with counts for display
+	const statusOptions = useMemo(
+		() => ALL_STATUSES.map((s) => ({ value: s.value, label: `${s.label} (${counts[s.value]})` })),
+		[counts],
+	);
 
 	return (
 		<div className="space-y-4">
@@ -361,38 +399,19 @@ export default function JobsTab({ token }: { token: string }) {
 						aria-label="Filter jobs"
 					/>
 				</div>
-				<div className="inline-flex rounded-lg border border-border overflow-hidden">
-					{HOURS_OPTIONS.map((opt) => (
-						<button
-							key={opt.value}
-							onClick={() => setHours(opt.value)}
-							className={cn(
-								'px-2.5 py-1.5 text-xs font-medium transition-colors border-r border-border last:border-r-0',
-								hours === opt.value
-									? 'bg-lv-purple/20 text-lv-purple'
-									: 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-							)}
-						>
-							{opt.label}
-						</button>
-					))}
-				</div>
-				<div className="inline-flex rounded-lg border border-border overflow-hidden">
-					{POLL_OPTIONS.map((opt) => (
-						<button
-							key={opt.value}
-							onClick={() => setPollInterval(opt.value)}
-							className={cn(
-								'px-2.5 py-1.5 text-xs font-medium transition-colors border-r border-border last:border-r-0',
-								pollInterval === opt.value
-									? 'bg-lv-blue/20 text-lv-blue'
-									: 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-							)}
-						>
-							{opt.label}
-						</button>
-					))}
-				</div>
+				<SegmentedGroup
+					label="Time range"
+					options={HOURS_OPTIONS}
+					value={hours}
+					onChange={setHours}
+				/>
+				<SegmentedGroup
+					label="Poll interval"
+					options={POLL_OPTIONS}
+					value={pollInterval}
+					onChange={setPollInterval}
+					activeClass="bg-lv-blue/20 text-lv-blue"
+				/>
 				<Button onClick={fetchJobs} disabled={loading} variant="outline" size="sm" className="gap-1.5">
 					{loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
 					Refresh
@@ -400,29 +419,15 @@ export default function JobsTab({ token }: { token: string }) {
 			</div>
 
 			{/* Status filter */}
-			<div className="inline-flex rounded-lg border border-border overflow-hidden">
-				{ALL_STATUSES.map((s) => (
-					<button
-						key={s}
-						onClick={() => setStatusFilter(s)}
-						className={cn(
-							'px-3 py-1.5 text-xs font-medium transition-colors border-r border-border last:border-r-0 capitalize',
-							statusFilter === s
-								? 'bg-lv-purple/20 text-lv-purple'
-								: 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-						)}
-					>
-						{s} ({counts[s]})
-					</button>
-				))}
-			</div>
+			<SegmentedGroup
+				label="Status filter"
+				options={statusOptions}
+				value={statusFilter}
+				onChange={setStatusFilter}
+			/>
 
 			{/* Error */}
-			{error && (
-				<div className="rounded-lg border border-lv-red/30 bg-lv-red/10 px-4 py-3 text-sm text-lv-red">
-					{error}
-				</div>
-			)}
+			{error && <ErrorBanner>{error}</ErrorBanner>}
 
 			{/* Loading skeleton */}
 			{initialLoad && !error && <JobsSkeleton />}
@@ -454,7 +459,7 @@ export default function JobsTab({ token }: { token: string }) {
 								job={job}
 								stale={isStale(job)}
 								onRetry={(id) => jobAction(id, 'retry')}
-								onDelete={(id) => jobAction(id, 'delete')}
+								onDelete={(id) => { if (window.confirm(`Delete job ${id}?`)) jobAction(id, 'delete'); }}
 								actionLoading={actionLoading}
 							/>
 						))}
@@ -491,7 +496,17 @@ export default function JobsTab({ token }: { token: string }) {
 										<Fragment key={job.job_id}>
 											<TableRow
 												className="cursor-pointer"
+												tabIndex={0}
+												role="button"
+												aria-expanded={expanded}
+												aria-label={`${job.status} job: ${job.path}`}
 												onClick={() => setExpandedId(expanded ? null : job.job_id)}
+												onKeyDown={(e) => {
+													if (e.key === 'Enter' || e.key === ' ') {
+														e.preventDefault();
+														setExpandedId(expanded ? null : job.job_id);
+													}
+												}}
 											>
 												<TableCell>
 													<div className="flex items-center gap-1.5">
@@ -534,49 +549,70 @@ export default function JobsTab({ token }: { token: string }) {
 												<TableRow className="bg-lovelace-950/50 hover:bg-lovelace-950/50">
 													<TableCell colSpan={7} className="py-3 px-4">
 														<div className="flex items-start justify-between gap-4">
-													<dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-xs">
-														<dt className="text-muted-foreground">Job ID</dt>
-														<dd className="font-data text-lv-cyan truncate" title={job.job_id}>{job.job_id}</dd>
-														{job.source_type && <>
-															<dt className="text-muted-foreground">Source</dt>
-															<dd className="font-data">{job.source_type}</dd>
-														</>}
-														{job.error && <>
-															<dt className="text-lv-red">Error</dt>
-															<dd className="font-data text-lv-red">{job.error}</dd>
-														</>}
-														{job.params && Object.keys(job.params).length > 0 && <>
-															<dt className="text-muted-foreground">All params</dt>
-															<dd className="font-data">{Object.entries(job.params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).join(', ')}</dd>
-														</>}
-													</dl>
-													<div className="flex gap-1.5 shrink-0">
-														{job.status !== 'complete' && (
-															<Button
-																variant="outline"
-																size="xs"
-																className="gap-1"
-																disabled={actionLoading === job.job_id}
-																onClick={(e) => { e.stopPropagation(); jobAction(job.job_id, 'retry'); }}
-															>
-																{actionLoading === job.job_id
-																	? <Loader2 className="h-3 w-3 animate-spin" />
-																	: <RotateCcw className="h-3 w-3" />}
-																Retry
-															</Button>
-														)}
-														<Button
-															variant="outline"
-															size="xs"
-															className="gap-1 text-lv-red border-lv-red/30 hover:bg-lv-red/10"
-															disabled={actionLoading === job.job_id}
-															onClick={(e) => { e.stopPropagation(); jobAction(job.job_id, 'delete'); }}
-														>
-															<Trash2 className="h-3 w-3" />
-															Delete
-														</Button>
-													</div>
-												</div>
+															<dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-xs">
+																<dt className="text-muted-foreground">Job ID</dt>
+																<dd className="font-data text-lv-cyan truncate" title={job.job_id}>{job.job_id}</dd>
+																{job.source_type && <>
+																	<dt className="text-muted-foreground">Source</dt>
+																	<dd className="font-data">{job.source_type}</dd>
+																</>}
+																{job.error && <>
+																	<dt className="text-lv-red">Error</dt>
+																	<dd className="font-data text-lv-red">{job.error}</dd>
+																</>}
+																{job.params && Object.keys(job.params).length > 0 && <>
+																	<dt className="text-muted-foreground">All params</dt>
+																	<dd className="font-data">{Object.entries(job.params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${v}`).join(', ')}</dd>
+																</>}
+															</dl>
+															<div className="flex gap-1.5 shrink-0">
+																{job.status !== 'complete' && (
+																	<Button
+																		variant="outline"
+																		size="xs"
+																		className="gap-1"
+																		disabled={actionLoading === job.job_id}
+																		onClick={(e) => { e.stopPropagation(); jobAction(job.job_id, 'retry'); }}
+																	>
+																		{actionLoading === job.job_id
+																			? <Loader2 className="h-3 w-3 animate-spin" />
+																			: <RotateCcw className="h-3 w-3" />}
+																		Retry
+																	</Button>
+																)}
+																{confirmDeleteId === job.job_id ? (
+																	<>
+																		<Button
+																			variant="outline"
+																			size="xs"
+																			className="gap-1 text-lv-red border-lv-red/30 hover:bg-lv-red/10"
+																			onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); jobAction(job.job_id, 'delete'); }}
+																		>
+																			Confirm
+																		</Button>
+																		<Button
+																			variant="outline"
+																			size="xs"
+																			className="gap-1"
+																			onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+																		>
+																			Cancel
+																		</Button>
+																	</>
+																) : (
+																	<Button
+																		variant="outline"
+																		size="xs"
+																		className="gap-1 text-lv-red border-lv-red/30 hover:bg-lv-red/10"
+																		disabled={actionLoading === job.job_id}
+																		onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(job.job_id); }}
+																	>
+																		<Trash2 className="h-3 w-3" />
+																		Delete
+																	</Button>
+																)}
+															</div>
+														</div>
 													</TableCell>
 												</TableRow>
 											)}

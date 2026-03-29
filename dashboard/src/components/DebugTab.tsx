@@ -2,16 +2,17 @@ import { useState } from 'react';
 import { Play, Loader2, Globe, Clock, HardDrive, FileType, Shield } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Button } from './ui/button';
-import { Badge } from './ui/badge';
 import { Input } from './ui/input';
+import { ErrorBanner } from './ui/error-banner';
 import { T } from '@/lib/typography';
 import { cn, BASE, formatBytes } from '@/lib/utils';
 
+/** Shape of the diagnostics response from the debug endpoint. */
 interface DiagnosticsResult {
 	diagnostics: {
 		requestId: string;
 		path: string;
-		params: Record<string, unknown>;
+		params: Record<string, string | number | boolean>;
 		origin: { name: string; sources: { type: string; priority: number }[]; ttl: Record<string, number> };
 		captures: Record<string, string>;
 		config: { derivatives: string[]; responsive: unknown; passthrough: unknown; containerEnabled: boolean };
@@ -23,6 +24,7 @@ interface DiagnosticsResult {
 
 // ── Response Summary Card ────────────────────────────────────────────
 
+/** Compact summary of the HTTP response from a debug test. */
 function ResponseSummary({
 	status,
 	size,
@@ -48,7 +50,7 @@ function ResponseSummary({
 	return (
 		<Card className="animate-fade-in-up opacity-0 md:col-span-2">
 			<CardContent className="p-4">
-				<div className="flex flex-wrap gap-6">
+				<div className="grid grid-cols-2 sm:grid-cols-3 md:flex md:flex-wrap gap-4 md:gap-6">
 					{items.map(({ icon: Icon, label, value, color }) => (
 						<div key={label} className="flex items-center gap-2">
 							<Icon className="h-3.5 w-3.5 text-muted-foreground" />
@@ -64,6 +66,7 @@ function ResponseSummary({
 
 // ── Key-Value List ───────────────────────────────────────────────────
 
+/** Definition list for key-value display (params, origin info, etc). */
 function KVList({ items }: { items: { key: string; value: React.ReactNode; color?: string }[] }) {
 	return (
 		<dl className="space-y-1.5">
@@ -77,9 +80,17 @@ function KVList({ items }: { items: { key: string; value: React.ReactNode; color
 	);
 }
 
+/** Normalize a URL path, ensuring it starts with '/'. */
+function normalizePath(input: string): string {
+	const trimmed = input.trim();
+	if (!trimmed) return '/';
+	return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
 // ── Main Component ───────────────────────────────────────────────────
 
-export default function DebugTab() {
+/** Debug tab for testing transform URLs and inspecting diagnostics. */
+export function DebugTab() {
 	const [url, setUrl] = useState('/rocky.mp4?derivative=tablet');
 	const [diagnostics, setDiagnostics] = useState<DiagnosticsResult['diagnostics'] | null>(null);
 	const [headers, setHeaders] = useState<[string, string][]>([]);
@@ -95,8 +106,9 @@ export default function DebugTab() {
 		setDiagnostics(null);
 		setHeaders([]);
 		try {
-			const sep = url.includes('?') ? '&' : '?';
-			const diagUrl = `${BASE}${url}${sep}debug=view`;
+			const normalizedUrl = normalizePath(url);
+			const sep = normalizedUrl.includes('?') ? '&' : '?';
+			const diagUrl = `${BASE}${normalizedUrl}${sep}debug=view`;
 			const diagRes = await fetch(diagUrl);
 			if (diagRes.ok) {
 				const data = await diagRes.json() as DiagnosticsResult;
@@ -104,7 +116,7 @@ export default function DebugTab() {
 			}
 
 			const t0 = performance.now();
-			const transformUrl = `${BASE}${url}${sep}debug`;
+			const transformUrl = `${BASE}${normalizedUrl}${sep}debug`;
 			const res = await fetch(transformUrl);
 			setResponseTime(Math.round(performance.now() - t0));
 			setResponseStatus(res.status);
@@ -143,11 +155,7 @@ export default function DebugTab() {
 			</div>
 
 			{/* Error */}
-			{error && (
-				<div className="rounded-lg border border-lv-red/30 bg-lv-red/10 px-4 py-3 text-sm text-lv-red">
-					{error}
-				</div>
-			)}
+			{error && <ErrorBanner>{error}</ErrorBanner>}
 
 			{/* Results */}
 			{(diagnostics || headers.length > 0) && (

@@ -1,17 +1,25 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { BarChart3, Container, Bug, KeyRound, Check, Loader2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { TooltipProvider } from './ui/tooltip';
-import AnalyticsTab from './AnalyticsTab';
-import JobsTab from './JobsTab';
-import DebugTab from './DebugTab';
 
-export default function Dashboard() {
+const AnalyticsTab = lazy(() => import('./AnalyticsTab.lazy'));
+const JobsTab = lazy(() => import('./JobsTab.lazy'));
+const DebugTab = lazy(() => import('./DebugTab.lazy'));
+
+/** Minimal loading fallback for lazy-loaded tabs. */
+function TabFallback() {
+	return <div className="flex items-center justify-center h-48"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>;
+}
+
+/** Root dashboard component with token management and tab navigation. */
+export function Dashboard() {
 	const [token, setToken] = useState('');
 	const [tokenSaved, setTokenSaved] = useState(false);
 	const [saving, setSaving] = useState(false);
+	const [activeTab, setActiveTab] = useState('analytics');
 
 	// Hydration-safe: read localStorage only after mount
 	useEffect(() => {
@@ -36,7 +44,7 @@ export default function Dashboard() {
 				<header className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
 					<div className="flex items-center gap-3">
 						<div className="flex h-8 w-8 items-center justify-center rounded-md bg-lv-purple/10">
-							<svg className="h-5 w-5 text-lv-purple" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+							<svg className="h-5 w-5 text-lv-purple" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
 								<rect x="2" y="4" width="20" height="16" rx="2" />
 								<path d="M10 9l5 3-5 3V9z" fill="currentColor" />
 							</svg>
@@ -66,8 +74,8 @@ export default function Dashboard() {
 					</div>
 				</header>
 
-				{/* Tabs */}
-				<Tabs defaultValue="analytics">
+				{/* Tabs — only the active tab renders its content */}
+				<Tabs value={activeTab} onValueChange={setActiveTab}>
 					<TabsList className="w-full sm:w-auto">
 						<TabsTrigger value="analytics" className="gap-1.5">
 							<BarChart3 className="h-3.5 w-3.5" />
@@ -83,15 +91,23 @@ export default function Dashboard() {
 						</TabsTrigger>
 					</TabsList>
 
-					<TabsContent value="analytics">
-						<AnalyticsTab token={token} />
-					</TabsContent>
-					<TabsContent value="jobs">
-						<JobsTab token={token} />
-					</TabsContent>
-					<TabsContent value="debug">
-						<DebugTab />
-					</TabsContent>
+					<Suspense fallback={<TabFallback />}>
+						{activeTab === 'analytics' && (
+							<TabsContent value="analytics" forceMount>
+								<AnalyticsTab token={token} />
+							</TabsContent>
+						)}
+						{activeTab === 'jobs' && (
+							<TabsContent value="jobs" forceMount>
+								<JobsTab token={token} />
+							</TabsContent>
+						)}
+						{activeTab === 'debug' && (
+							<TabsContent value="debug" forceMount>
+								<DebugTab />
+							</TabsContent>
+						)}
+					</Suspense>
 				</Tabs>
 			</div>
 		</TooltipProvider>
