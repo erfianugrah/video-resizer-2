@@ -286,7 +286,7 @@ export function JobsTab() {
 				credentials: 'same-origin',
 			});
 			if (resp.status === 401) {
-				window.location.reload(); // session expired — reload to show login
+				window.location.href = '/admin/dashboard'; // session expired — redirect to login
 				return;
 			}
 			if (!resp.ok) { setError(`HTTP ${resp.status}`); return; }

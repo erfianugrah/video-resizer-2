@@ -170,7 +170,8 @@ export function AnalyticsTab() {
 				fetch(`${BASE}/admin/analytics/errors?hours=${hours}&limit=50`, opts),
 			]);
 			if (summaryRes.status === 401) {
-				window.location.reload(); // session expired — reload to show login
+				// Session expired — redirect to login page (not reload, which loops)
+				window.location.href = '/admin/dashboard';
 				return;
 			}
 			const summaryData = await summaryRes.json() as { summary: AnalyticsSummary };

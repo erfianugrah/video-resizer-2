@@ -69,7 +69,7 @@ function getCookie(req: Request, name: string): string | null {
 
 /** Build the Set-Cookie header for the session. */
 function sessionCookieHeader(value: string, maxAge: number): string {
-	return `${COOKIE_NAME}=${value}; Path=/admin/dashboard; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`;
+	return `${COOKIE_NAME}=${value}; Path=/admin; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`;
 }
 
 /** Login page HTML — minimal, no external deps. */
