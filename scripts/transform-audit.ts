@@ -575,18 +575,26 @@ async function main() {
 		md.push(`## ${path} (${pathRows.length} transforms, ${pathAnom} flagged)`);
 		md.push('');
 
+		// File name map for readable labels
+		const fileMap: Record<string, string> = {
+			rocky: 'rocky.mp4',
+			erfi: 'erfi-135kg.mp4',
+			bbb: 'big_buck_bunny_1080p.mov',
+		};
+
 		const sources = [...new Set(pathRows.map((r) => r.label.split('/')[0]))];
 		for (const src of sources) {
 			const srcRows = pathRows.filter((r) => r.label.startsWith(src + '/'));
-			if (sources.length > 1) md.push(`### ${src}\n`);
-			md.push('| Params | Actual | Codec | Profile | Level | Res | Pix Fmt | Bits | Color | Flag |');
-			md.push('|--------|--------|-------|---------|-------|-----|---------|------|-------|------|');
+			const fileName = fileMap[src] ?? src;
+			if (sources.length > 1) md.push(`### ${fileName}\n`);
+			md.push('| File | Params | Actual | Codec | Profile | Level | Res | Pix Fmt | Bits | Color | Flag |');
+			md.push('|------|--------|--------|-------|---------|-------|-----|---------|------|-------|------|');
 			for (const r of srcRows) {
 				const shortLabel = r.label.replace(/^[^/]+\/[^/]+\//, '');
 				const color = r.colorSpace || '';
 				const flag = r.anomalies.length > 0 ? r.anomalies.map((a) => a.split(' — ')[0]).join(', ') : '';
 				const ap = r.actualPath !== r.expectedPath ? `**${r.actualPath}**` : r.actualPath;
-				md.push(`| ${shortLabel} | ${ap} | ${r.codec} | ${r.profile} | ${r.levelStr} | ${r.width}x${r.height} | ${r.pixFmt} | ${r.bits} | ${color} | ${flag} |`);
+				md.push(`| ${fileName} | ${shortLabel} | ${ap} | ${r.codec} | ${r.profile} | ${r.levelStr} | ${r.width}x${r.height} | ${r.pixFmt} | ${r.bits} | ${color} | ${flag} |`);
 			}
 			md.push('');
 		}
@@ -596,11 +604,15 @@ async function main() {
 	if (anomalyRows.length > 0) {
 		md.push('## Flagged');
 		md.push('');
-		md.push('| Label | Path | Profile | Level | Res | Pix Fmt | Issue |');
-		md.push('|-------|------|---------|-------|-----|---------|-------|');
+		md.push('| File | Params | Path | Profile | Level | Res | Pix Fmt | Issue |');
+		md.push('|------|--------|------|---------|-------|-----|---------|-------|');
+		const flagFileMap: Record<string, string> = { rocky: 'rocky.mp4', erfi: 'erfi-135kg.mp4', bbb: 'big_buck_bunny_1080p.mov' };
 		for (const r of anomalyRows) {
+			const parts = r.label.split('/');
+			const file = flagFileMap[parts[0]] ?? parts[0];
+			const params = parts.slice(2).join('/');
 			for (const a of r.anomalies) {
-				md.push(`| ${r.label} | ${r.actualPath} | ${r.profile} | ${r.levelStr} | ${r.width}x${r.height} | ${r.pixFmt} | ${a} |`);
+				md.push(`| ${file} | ${params} | ${r.actualPath} | ${r.profile} | ${r.levelStr} | ${r.width}x${r.height} | ${r.pixFmt} | ${a} |`);
 			}
 		}
 		md.push('');
