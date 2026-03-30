@@ -126,3 +126,7 @@ All admin endpoints require `Authorization: Bearer <CONFIG_API_TOKEN>`.
 | `/admin/jobs` | GET | Container job list `?hours=24&active=true&filter=text` |
 | `/admin/dashboard` | GET | Dashboard UI (cookie auth) |
 | `/sse/job/:id` | GET | SSE progress stream for a container job |
+
+## License
+
+[MIT](LICENSE) © 2026 Erfi Anugrah
