@@ -209,6 +209,8 @@ export function JobsTab() {
 	const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
 	const sseRefs = useRef<Map<string, EventSource>>(new Map());
+	/** Incremented to trigger an immediate refetch (SSE terminal/error). */
+	const [refetchTick, setRefetchTick] = useState(0);
 
 	/** Retry or delete a job via the admin API. */
 	const jobAction = useCallback(async (jobId: string, action: 'retry' | 'delete') => {
@@ -320,6 +322,11 @@ export function JobsTab() {
 		};
 	}, [fetchJobs, pollInterval]);
 
+	// Refetch when SSE signals a terminal state or connection error
+	useEffect(() => {
+		if (refetchTick > 0) fetchJobs();
+	}, [refetchTick, fetchJobs]);
+
 	// SSE: connect for active jobs — use a stable dependency based on active job IDs + statuses
 	const sseKey = useMemo(
 		() => jobs.filter((j) => ACTIVE_STATUSES.has(j.status)).map((j) => `${j.job_id}:${j.status}`).join(','),
@@ -348,10 +355,17 @@ export function JobsTab() {
 					if (data.status === 'complete' || data.status === 'failed' || data.status === 'not_found') {
 						es.close();
 						sseRefs.current.delete(job.job_id);
+						// Refetch to get full metadata (output_size, completed_at)
+						setRefetchTick((t) => t + 1);
 					}
 				} catch { /* ignore parse errors */ }
 			};
-			es.onerror = () => { es.close(); sseRefs.current.delete(job.job_id); };
+			es.onerror = () => {
+				es.close();
+				sseRefs.current.delete(job.job_id);
+				// Connection lost — refetch to recover current state
+				setRefetchTick((t) => t + 1);
+			};
 			sseRefs.current.set(job.job_id, es);
 		}
 

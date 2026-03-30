@@ -167,8 +167,32 @@ export async function transformHandler(c: HonoContext) {
 	rlog.info('Request', { path, query: url.search });
 
 	// 1. Parse + resolve params
-	const { params: translated, clientHints } = translateAkamaiParams(url.searchParams);
-	let params = parseParams(translated);
+	const { params: translated, clientHints, rawImWidth, rawImHeight } = translateAkamaiParams(url.searchParams);
+	const { params: parsed, warnings } = parseParams(translated);
+	let params = parsed;
+
+	if (warnings.length > 0) {
+		rlog.warn('Param validation warnings', { warnings });
+	}
+
+	// IMQuery breakpoint matching: imwidth/imheight are used to SELECT a derivative
+	// via breakpoint ranges, not as raw width/height values. This happens before
+	// derivative/responsive resolution so the matched derivative takes priority.
+	if ((rawImWidth || rawImHeight) && !params.derivative && config.responsive) {
+		const effectiveWidth = rawImWidth ?? rawImHeight ?? 0;
+		const sorted = [...config.responsive.breakpoints].sort((a, b) => a.maxWidth - b.maxWidth);
+		for (const bp of sorted) {
+			if (effectiveWidth <= bp.maxWidth && bp.derivative in config.derivatives) {
+				params = { ...params, derivative: bp.derivative };
+				break;
+			}
+		}
+		// No breakpoint matched — use default
+		if (!params.derivative) {
+			params = { ...params, derivative: config.responsive.defaultDerivative };
+		}
+	}
+
 	params = resolveDerivative(params, config.derivatives);
 
 	const reqHeaders = new Headers(c.req.raw.headers);
@@ -186,6 +210,7 @@ export async function transformHandler(c: HonoContext) {
 		height: params.height,
 		mode: params.mode,
 		fit: params.fit,
+		rawImWidth,
 	});
 
 	// 2. Match origin
@@ -222,6 +247,9 @@ export async function transformHandler(c: HonoContext) {
 			needsContainer: needsContainer(params),
 			resolvedWidth: params.width ?? null,
 			resolvedHeight: params.height ?? null,
+			rawImWidth,
+			rawImHeight,
+			warnings,
 		};
 		return c.json({ diagnostics, _meta: { ts: Date.now() } });
 	}
@@ -367,28 +395,35 @@ export async function transformHandler(c: HonoContext) {
 		const inflight = coalescer.get(coalesceKey);
 		if (inflight) {
 			rlog.info('Coalesced — waiting for in-flight transform', { path, coalesceKey });
-			await inflight;
-			// Transform is done and stored — read from cache independently
-			const cached = await cache.match(cacheReq);
-			if (cached) {
-				rlog.info('Coalesced cache HIT', { path });
-				cached.headers.set('X-Request-ID', requestId);
-				return cached;
+			// Safety timeout: don't block forever if the in-flight transform hangs.
+			// After 60s, give up waiting and proceed with own transform.
+			const timeout = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 60_000));
+			const result = await Promise.race([inflight.then(() => 'done' as const), timeout]);
+			if (result === 'timeout') {
+				rlog.warn('Coalesce wait timed out after 60s, proceeding with own transform', { path, coalesceKey });
+				coalescer.delete(coalesceKey);
+			} else {
+				// Transform is done and stored — read from cache independently
+				const cached = await cache.match(cacheReq);
+				if (cached) {
+					rlog.info('Coalesced cache HIT', { path });
+					cached.headers.set('X-Request-ID', requestId);
+					return cached;
+				}
+				// Rare: cache.match miss right after put. Fall through to R2 check
+				const r2Retry = await c.env.VIDEOS.get(r2TransformKey);
+				if (r2Retry) {
+					rlog.info('Coalesced R2 fallback HIT', { path });
+					return new Response(r2Retry.body, {
+						headers: {
+							'Content-Type': r2Retry.httpMetadata?.contentType ?? 'video/mp4',
+							'Content-Length': String(r2Retry.size),
+							'X-Request-ID': requestId,
+						},
+					});
+				}
+				rlog.warn('Coalesced miss after signal, proceeding with own transform', { path });
 			}
-			// Rare: cache.match miss right after put. Fall through to R2 check
-			// (line 282 above already ran, but result may now exist).
-			const r2Retry = await c.env.VIDEOS.get(r2TransformKey);
-			if (r2Retry) {
-				rlog.info('Coalesced R2 fallback HIT', { path });
-				return new Response(r2Retry.body, {
-					headers: {
-						'Content-Type': r2Retry.httpMetadata?.contentType ?? 'video/mp4',
-						'Content-Length': String(r2Retry.size),
-						'X-Request-ID': requestId,
-					},
-				});
-			}
-			rlog.warn('Coalesced miss after signal, proceeding with own transform', { path });
 		}
 	}
 
@@ -411,29 +446,97 @@ export async function transformHandler(c: HonoContext) {
 			for (const source of sources) {
 				try {
 					const resolved = resolveSourcePath(source, path, originMatch.captures);
-					let stream: ReadableStream<Uint8Array> | null = null;
 
 					if (source.type === 'r2') {
 						const bucket = envRecord[source.bucketBinding] as R2Bucket | undefined;
-						const object = bucket ? await bucket.get(resolved) : null;
-						if (object) {
-							etag = object.etag;
-							sourceType = 'r2';
-							stream = object.body;
-						}
-					} else if (source.url) {
-						const resp = await fetch(source.url.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, ''));
-						if (resp.ok && resp.body) {
-							sourceType = source.type;
-							stream = resp.body;
-						}
-					}
+						if (!bucket) continue;
+						const object = await bucket.get(resolved);
+						if (!object) continue;
+						etag = object.etag;
+						sourceType = 'r2';
 
-					if (stream) {
+						// Size-based routing: very large files use async queue path
+						// to avoid streaming hundreds of MB through the DO.
+						if (object.size > 256 * 1024 * 1024) {
+							const pendingCacheKey = buildCacheKey(path, params, undefined, etag);
+							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
+							const fetchableUrl = remoteSource && 'url' in remoteSource
+								? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
+								: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
+							rlog.info('Container-only + oversized R2, enqueuing async container', {
+								size: object.size, fetchableUrl,
+							});
+							object.body.cancel().catch(() => {});
+							const jobId = pendingCacheKey;
+							const result = await enqueueOrFireAndForget(c, {
+								jobId,
+								path,
+								params,
+								sourceUrl: fetchableUrl,
+								callbackCacheKey: pendingCacheKey,
+								requestUrl,
+								origin: originMatch.origin.name,
+								sourceType,
+								etag,
+								version,
+							}, rlog);
+							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+							return {
+								transformed: new Response(
+									JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
+									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
+								),
+								etag, version, sourceType,
+							};
+						}
+
+						// Fits in sync container (<= 256MB)
 						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
-						transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, stream, params, instanceKey);
+						transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, object.body, params, instanceKey);
 						transformSource = 'container';
 						break;
+					} else if (source.url) {
+						// Remote source: check size via HEAD, route to async if large
+						const remoteUrl = source.url.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
+						const headResp = await fetch(remoteUrl, { method: 'HEAD' }).catch(() => null);
+						const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
+						sourceType = source.type;
+
+						if (contentLength > 256 * 1024 * 1024) {
+							const pendingCacheKey = buildCacheKey(path, params);
+							rlog.info('Container-only + oversized remote, enqueuing async container', {
+								size: contentLength, fetchableUrl: remoteUrl,
+							});
+							const jobId = pendingCacheKey;
+							const result = await enqueueOrFireAndForget(c, {
+								jobId,
+								path,
+								params,
+								sourceUrl: remoteUrl,
+								callbackCacheKey: pendingCacheKey,
+								requestUrl,
+								origin: originMatch.origin.name,
+								sourceType,
+								etag,
+								version,
+							}, rlog);
+							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+							return {
+								transformed: new Response(
+									JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
+									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
+								),
+								etag, version, sourceType,
+							};
+						}
+
+						const resp = await fetch(remoteUrl);
+						if (resp.ok && resp.body) {
+							const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
+							transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, resp.body, params, instanceKey);
+							transformSource = 'container';
+							break;
+						}
 					}
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
@@ -525,6 +628,29 @@ export async function transformHandler(c: HonoContext) {
 							rlog.warn('Binding failed, falling back to container', { error: bindingErr.message });
 							const retryObject = await bucket.get(resolved);
 							if (retryObject) {
+								// Check size: >256MB must use async path to avoid DO timeout
+								if (retryObject.size > 256 * 1024 * 1024) {
+									retryObject.body.cancel().catch(() => {});
+									const pendingCacheKey = buildCacheKey(path, params, undefined, etag);
+									const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
+									const fetchableUrl = remoteSource && 'url' in remoteSource
+										? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
+										: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
+									const jobId = pendingCacheKey;
+									const result = await enqueueOrFireAndForget(c, {
+										jobId, path, params, sourceUrl: fetchableUrl,
+										callbackCacheKey: pendingCacheKey, requestUrl,
+										origin: originMatch.origin.name, sourceType, etag, version,
+									}, rlog);
+									const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+									return {
+										transformed: new Response(
+											JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
+											{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
+										),
+										etag, version, sourceType,
+									};
+								}
 								const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
 								transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, retryObject.body, params, instanceKey);
 								transformSource = 'container';
@@ -764,6 +890,7 @@ export async function transformHandler(c: HonoContext) {
 		if (etag) headers.set('X-Source-Etag', etag);
 		if (params.width) headers.set('X-Resolved-Width', String(params.width));
 		if (params.height) headers.set('X-Resolved-Height', String(params.height));
+		if (warnings.length > 0) headers.set('X-Param-Warnings', warnings.map((w) => `${w.param}: ${w.reason}`).join('; '));
 
 		// Playback hint headers
 		if (params.loop !== undefined) headers.set('X-Playback-Loop', String(params.loop));
@@ -868,17 +995,32 @@ export async function transformHandler(c: HonoContext) {
 			const cached = await cache.match(cacheReq);
 			if (cached) return cached;
 
-			rlog.warn('cache.match miss after put', { path });
-			return new Response(null, { status: 200, headers });
+			// Rare: cache.put may not be visible to cache.match immediately.
+			// Re-read from R2 (body was consumed by cache.put above).
+			rlog.warn('cache.match miss after put, re-reading from R2', { path });
+			const r2Reread = await c.env.VIDEOS.get(r2StoreKey);
+			if (r2Reread) {
+				headers.set('Content-Length', String(r2Reread.size));
+				return new Response(r2Reread.body, { status: 200, headers });
+			}
+			return new Response('Transform stored but unavailable', { status: 502, headers });
 		} else {
 			// Not cacheable (debug or passthrough) — serve directly
 			return new Response(transformed.body, { status: transformed.status, headers });
 		}
 	});
 
-	// Register signal (void) for coalescing — only for cacheable requests
+	// Register signal (void) for coalescing — only for cacheable requests.
+	// We register optimistically, then clean up if the response was 202
+	// (async container job). 202s produce nothing in cache/R2 for joiners,
+	// so coalescing them would just make joiners wait for nothing.
 	if (!skipCache) {
-		const signal = responsePromise.then(() => {});
+		const signal = responsePromise.then((resp) => {
+			// Remove coalescer entry for non-cacheable responses (202 pending)
+			if (resp.status === 202 || resp.headers.get('X-Transform-Pending') === 'true') {
+				coalescer.delete(coalesceKey);
+			}
+		});
 		coalescer.set(coalesceKey, signal);
 		signal.finally(() => coalescer.delete(coalesceKey));
 	}

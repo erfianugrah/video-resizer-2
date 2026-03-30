@@ -134,6 +134,13 @@ export async function handleQueue(
  * DLQ consumer — handles messages that exhausted all retries.
  * Marks jobs as terminal 'failed' in D1.
  */
+/**
+ * DLQ consumer — handles messages that exhausted all retries.
+ *
+ * Checks R2 before marking failed — the container may have completed
+ * but D1 wasn't updated (e.g. D1 was down during all retry windows).
+ * Only marks 'failed' if R2 genuinely has no result.
+ */
 export async function handleDLQ(
 	batch: MessageBatch<JobMessage>,
 	env: Env,
@@ -141,6 +148,21 @@ export async function handleDLQ(
 ): Promise<void> {
 	for (const message of batch.messages) {
 		const job = message.body;
+
+		// Check R2 first — result may exist even though retries exhausted
+		const r2Key = `_transformed/${job.callbackCacheKey}`;
+		const r2Head = await env.VIDEOS.head(r2Key).catch(() => null);
+		if (r2Head) {
+			log.info('DLQ: result found in R2, marking complete', {
+				jobId: job.jobId, size: r2Head.size,
+			});
+			if (env.ANALYTICS) {
+				ctx.waitUntil(completeJob(env.ANALYTICS, job.jobId, r2Head.size));
+			}
+			message.ack();
+			continue;
+		}
+
 		log.error('DLQ: job exhausted all retries', {
 			jobId: job.jobId,
 			path: job.path,

@@ -14,54 +14,54 @@ describe('buildContainerInstanceKey', () => {
 	const path = '/rocky.mp4';
 
 	it('includes origin, path, and hash', () => {
-		const params = parseParams(new URLSearchParams('width=1280'));
+		const params = parseParams(new URLSearchParams('width=1280')).params;
 		const key = buildContainerInstanceKey(origin, path, params);
 		expect(key).toMatch(/^ffmpeg:standard:\/rocky\.mp4:[0-9a-f]{8}$/);
 	});
 
 	it('same params produce same key', () => {
-		const p1 = parseParams(new URLSearchParams('width=1280&height=720'));
-		const p2 = parseParams(new URLSearchParams('width=1280&height=720'));
+		const p1 = parseParams(new URLSearchParams('width=1280&height=720')).params;
+		const p2 = parseParams(new URLSearchParams('width=1280&height=720')).params;
 		expect(buildContainerInstanceKey(origin, path, p1)).toBe(
 			buildContainerInstanceKey(origin, path, p2),
 		);
 	});
 
 	it('different width produces different key', () => {
-		const p1 = parseParams(new URLSearchParams('width=1280'));
-		const p2 = parseParams(new URLSearchParams('width=640'));
+		const p1 = parseParams(new URLSearchParams('width=1280')).params;
+		const p2 = parseParams(new URLSearchParams('width=640')).params;
 		expect(buildContainerInstanceKey(origin, path, p1)).not.toBe(
 			buildContainerInstanceKey(origin, path, p2),
 		);
 	});
 
 	it('different mode produces different key', () => {
-		const p1 = parseParams(new URLSearchParams('mode=video&width=1280'));
-		const p2 = parseParams(new URLSearchParams('mode=frame&width=1280'));
+		const p1 = parseParams(new URLSearchParams('mode=video&width=1280')).params;
+		const p2 = parseParams(new URLSearchParams('mode=frame&width=1280')).params;
 		expect(buildContainerInstanceKey(origin, path, p1)).not.toBe(
 			buildContainerInstanceKey(origin, path, p2),
 		);
 	});
 
 	it('different fps produces different key', () => {
-		const p1 = parseParams(new URLSearchParams('fps=24'));
-		const p2 = parseParams(new URLSearchParams('fps=30'));
+		const p1 = parseParams(new URLSearchParams('fps=24')).params;
+		const p2 = parseParams(new URLSearchParams('fps=30')).params;
 		expect(buildContainerInstanceKey(origin, path, p1)).not.toBe(
 			buildContainerInstanceKey(origin, path, p2),
 		);
 	});
 
 	it('different duration produces different key', () => {
-		const p1 = parseParams(new URLSearchParams('duration=5s'));
-		const p2 = parseParams(new URLSearchParams('duration=10s'));
+		const p1 = parseParams(new URLSearchParams('duration=5s')).params;
+		const p2 = parseParams(new URLSearchParams('duration=10s')).params;
 		expect(buildContainerInstanceKey(origin, path, p1)).not.toBe(
 			buildContainerInstanceKey(origin, path, p2),
 		);
 	});
 
 	it('ignores non-transform params (filename, derivative name, playback hints)', () => {
-		const p1 = parseParams(new URLSearchParams('width=1280&filename=clip'));
-		const p2 = parseParams(new URLSearchParams('width=1280&filename=video'));
+		const p1 = parseParams(new URLSearchParams('width=1280&filename=clip')).params;
+		const p2 = parseParams(new URLSearchParams('width=1280&filename=video')).params;
 		// filename is not a transform param, but it's not in the hash either
 		// so both should produce the same key (only transform-affecting params matter)
 		const key1 = buildContainerInstanceKey(origin, path, p1);
@@ -70,14 +70,14 @@ describe('buildContainerInstanceKey', () => {
 	});
 
 	it('different origin produces different key', () => {
-		const params = parseParams(new URLSearchParams('width=1280'));
+		const params = parseParams(new URLSearchParams('width=1280')).params;
 		expect(buildContainerInstanceKey('origin-a', path, params)).not.toBe(
 			buildContainerInstanceKey('origin-b', path, params),
 		);
 	});
 
 	it('different path produces different key', () => {
-		const params = parseParams(new URLSearchParams('width=1280'));
+		const params = parseParams(new URLSearchParams('width=1280')).params;
 		expect(buildContainerInstanceKey(origin, '/a.mp4', params)).not.toBe(
 			buildContainerInstanceKey(origin, '/b.mp4', params),
 		);

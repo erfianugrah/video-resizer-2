@@ -14,9 +14,9 @@ import { z } from 'zod';
 
 /** Direct name mapping: Akamai param name -> canonical param name. */
 const AKAMAI_PARAM_MAP: Record<string, string> = {
-	// IMQuery params
-	imwidth: 'width',
-	imheight: 'height',
+	// IMQuery params — imwidth/imheight are NOT mapped to width/height.
+	// They're captured as rawImWidth/rawImHeight for breakpoint matching.
+	// Only impolicy, imformat, imdensity get direct name mapping.
 	imformat: 'format',
 	impolicy: 'derivative',
 	imdensity: 'dpr',
@@ -154,11 +154,17 @@ export function translateAkamaiParams(qs: URLSearchParams): {
 	params: URLSearchParams;
 	clientHints: Record<string, string>;
 	imref: Record<string, string>;
+	/** Raw imwidth value (before Zod validation) for breakpoint matching. */
+	rawImWidth: number | null;
+	/** Raw imheight value (before Zod validation) for breakpoint matching. */
+	rawImHeight: number | null;
 } {
 	const out = new URLSearchParams();
 	const translated = new Map<string, string>();
 	const clientHints: Record<string, string> = {};
 	let imref: Record<string, string> = {};
+	let rawImWidth: number | null = null;
+	let rawImHeight: number | null = null;
 
 	for (const [key, value] of qs) {
 		// Client hint injection params — consumed, not forwarded
@@ -178,6 +184,20 @@ export function translateAkamaiParams(qs: URLSearchParams): {
 			imref = parseImRef(value);
 			continue;
 		}
+		// IMQuery dimension params — captured for breakpoint matching,
+		// NOT forwarded as width/height. imwidth is for derivative *selection*
+		// (finding the closest breakpoint), not for raw transform dimensions.
+		if (key === 'imwidth') {
+			const n = parseFloat(value);
+			if (Number.isFinite(n) && n > 0) rawImWidth = n;
+			continue;
+		}
+		if (key === 'imheight') {
+			const n = parseFloat(value);
+			if (Number.isFinite(n) && n > 0) rawImHeight = n;
+			continue;
+		}
+
 		if (AKAMAI_CONSUMED.has(key)) {
 			continue;
 		}
@@ -215,29 +235,61 @@ export function translateAkamaiParams(qs: URLSearchParams): {
 		}
 	}
 
-	return { params: out, clientHints, imref };
+	return { params: out, clientHints, imref, rawImWidth, rawImHeight };
+}
+
+/** Validation warning for a param that was rejected by Zod. */
+export interface ParamWarning {
+	param: string;
+	value: string;
+	reason: string;
 }
 
 /**
  * Parse URLSearchParams into validated TransformParams.
  *
- * Invalid values are silently dropped (not errors) — out-of-range width
- * becomes undefined, invalid mode becomes undefined, etc. The caller
- * fills in defaults from derivatives or responsive sizing later.
+ * Returns both the parsed params and any validation warnings for params
+ * that were provided but rejected (out-of-range, invalid enum, etc.).
+ * Warnings are surfaced to the client via response headers / diagnostics.
  */
-export function parseParams(qs: URLSearchParams): TransformParams {
+export function parseParams(qs: URLSearchParams): { params: TransformParams; warnings: ParamWarning[] } {
 	const raw: Record<string, string> = {};
 	for (const [key, value] of qs) {
 		if (key in TransformParamsSchema.shape) {
 			raw[key] = value;
 		}
 	}
+
+	// Parse with catch(undefined) — Zod won't throw, but we need to detect
+	// which fields were provided but got dropped by comparing input vs output.
 	const params = TransformParamsSchema.parse(raw);
+	const warnings: ParamWarning[] = [];
+
+	// Detect silently dropped values by comparing raw input against parsed output
+	for (const [key, value] of Object.entries(raw)) {
+		if (!value) continue;
+		const parsed = (params as Record<string, unknown>)[key];
+		if (parsed === undefined && key !== 'debug') {
+			// Value was provided but Zod dropped it — produce a warning
+			const shape = TransformParamsSchema.shape[key as keyof typeof TransformParamsSchema.shape];
+			let reason = 'invalid value';
+			if (key === 'width' || key === 'height') reason = `must be integer between 10 and 2000, got ${value}`;
+			else if (key === 'mode') reason = `must be video|frame|spritesheet|audio, got "${value}"`;
+			else if (key === 'fit') reason = `must be contain|scale-down|cover, got "${value}"`;
+			else if (key === 'fps' || key === 'speed' || key === 'dpr') reason = `must be a positive number, got "${value}"`;
+			else if (key === 'rotate' || key === 'imageCount') reason = `must be a number, got "${value}"`;
+			else if (key === 'preload') reason = `must be none|metadata|auto, got "${value}"`;
+			else if (key === 'audio' || key === 'loop' || key === 'autoplay' || key === 'muted') reason = `must be true|false, got "${value}"`;
+			else if (key === 'filename') reason = `must be alphanumeric (max 120 chars), got "${value}"`;
+			warnings.push({ param: key, value, reason });
+		}
+	}
+
 	// Auto-switch: format=m4a implies mode=audio (v1 compat)
 	if (params.format === 'm4a' && !params.mode) {
-		return { ...params, mode: 'audio' as const };
+		return { params: { ...params, mode: 'audio' as const }, warnings };
 	}
-	return params;
+	return { params, warnings };
 }
 
 /**

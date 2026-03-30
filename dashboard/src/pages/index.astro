@@ -3,5 +3,5 @@ import Layout from '../layouts/Layout.astro';
 import { Dashboard } from '../components/Dashboard';
 ---
 <Layout title="video-resizer dashboard">
-	<Dashboard client:load />
+	<Dashboard client:only="react" />
 </Layout>

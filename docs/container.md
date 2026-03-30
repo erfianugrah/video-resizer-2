@@ -159,8 +159,7 @@ The `FFmpegContainer.outbound` static handler intercepts ALL outbound HTTP from 
 
 - **UPSERT guards**: `registerJob` ON CONFLICT preserves terminal statuses (`complete`, `failed`). A queue retry will not reset a completed or deleted job back to `pending`.
 - **Transition guards**: All D1 update statements (`updateJobStatus`, `updateJobProgress`, `completeJob`, `failJob`) include `WHERE status NOT IN ('complete', 'failed')` to prevent backward transitions.
-- **`waitUntil` everywhere**: All fire-and-forget D1 writes are wrapped in `ctx.waitUntil()` — in the queue consumer, DLQ consumer, and container outbound handler. Without this, D1 writes may not persist before the isolate terminates.
-- **Functions return `Promise<void>`**: `completeJob`, `failJob`, `updateJobStatus`, `updateJobProgress` return the D1 promise so callers can pass it to `waitUntil()`.
+- **`completeJob`/`failJob` awaited inline**: In the container outbound handler, `completeJob()` and `failJob()` are awaited inline (not fire-and-forget via `waitUntil`). Both include one retry on transient D1 failure. This ensures the D1 status update commits before the isolate terminates. Progress updates (`updateJobProgress`, `updateJobStatus`) remain `waitUntil` since they're non-critical.
 
 ## Dashboard auth
 
@@ -179,5 +178,8 @@ The active tab is persisted in the URL hash (`#jobs`, `#debug`) so page refresh 
 - **`require()` in ESM crashes silently**: `server.mjs` must use `import` at top, not `require()` in functions.
 - **Edge cache hides D1 updates**: add D1 status updates in all serve paths (edge HIT, R2 HIT, fresh transform).
 - **Never `arrayBuffer()` on container output**: use `ReadableStream` directly to R2 `put()`. Container outputs can be hundreds of MB.
-- **Always `waitUntil` D1 writes**: fire-and-forget D1 writes in outbound handlers MUST use `ctx.waitUntil()` or the isolate may terminate before the write commits. This was the root cause of jobs not being marked complete until the next user refresh.
+- **Await critical D1 writes inline**: `completeJob` and `failJob` in the outbound handler must be awaited (not `waitUntil`) because the isolate may die before `waitUntil` commits. Use `waitUntil` only for non-critical writes (progress, analytics).
+- **DLQ must check R2 before marking failed**: The container may have completed but D1 wasn't updated. The DLQ consumer now checks R2 first and marks `complete` if the result exists.
+- **Container-only path must check source size**: When `needsContainer` is true AND the source is >256MB, the async queue path must be used. Previously the sync container path streamed 725MB through the DO and timed out.
+- **Coalescer excludes 202 responses**: Async container jobs return 202 which produces nothing in cache/R2 for coalescer joiners. The coalescer now removes entries for 202 responses and has a 60s safety timeout.
 - **`max_batch_timeout: 0` may break delivery**: use `5` instead.

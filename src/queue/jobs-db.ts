@@ -61,18 +61,49 @@ export function updateJobProgress(db: D1Database, jobId: string, status: string,
 		.catch((err) => log.error('Job progress update failed', { error: err instanceof Error ? err.message : String(err) }));
 }
 
-/** Mark job complete in D1. Returns promise for waitUntil. */
-export function completeJob(db: D1Database, jobId: string, outputSize?: number): Promise<void> {
-	return db.prepare(COMPLETE_SQL).bind(Date.now(), outputSize ?? null, jobId).run()
-		.then(() => {})
-		.catch((err) => log.error('Job complete update failed', { error: err instanceof Error ? err.message : String(err) }));
+/**
+ * Mark job complete in D1 with retry.
+ *
+ * This is called from the container outbound handler after R2 put succeeds.
+ * Must be awaited inline (not fire-and-forget via waitUntil) to ensure the
+ * D1 write commits before the isolate terminates. Retries once on failure
+ * since D1 can have transient errors.
+ */
+export async function completeJob(db: D1Database, jobId: string, outputSize?: number): Promise<void> {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			await db.prepare(COMPLETE_SQL).bind(Date.now(), outputSize ?? null, jobId).run();
+			return;
+		} catch (err) {
+			log.error('Job complete update failed', {
+				error: err instanceof Error ? err.message : String(err),
+				attempt,
+				jobId,
+			});
+			if (attempt === 0) await new Promise((r) => setTimeout(r, 100));
+		}
+	}
 }
 
-/** Mark job failed in D1. Returns promise for waitUntil. */
-export function failJob(db: D1Database, jobId: string, error: string): Promise<void> {
-	return db.prepare(FAIL_SQL).bind(Date.now(), error.slice(0, 1000), jobId).run()
-		.then(() => {})
-		.catch((err) => log.error('Job fail update failed', { error: err instanceof Error ? err.message : String(err) }));
+/**
+ * Mark job failed in D1 with retry.
+ *
+ * Same retry strategy as completeJob — awaited inline from the outbound handler.
+ */
+export async function failJob(db: D1Database, jobId: string, error: string): Promise<void> {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			await db.prepare(FAIL_SQL).bind(Date.now(), error.slice(0, 1000), jobId).run();
+			return;
+		} catch (err) {
+			log.error('Job fail update failed', {
+				error: err instanceof Error ? err.message : String(err),
+				attempt,
+				jobId,
+			});
+			if (attempt === 0) await new Promise((r) => setTimeout(r, 100));
+		}
+	}
 }
 
 /**

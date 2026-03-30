@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { parseParams, translateAkamaiParams, needsContainer, parseImRef, type TransformParams } from '../../src/params/schema';
+import { parseParams, translateAkamaiParams, needsContainer, parseImRef, type TransformParams, type ParamWarning } from '../../src/params/schema';
 
 describe('params/schema', () => {
 	describe('parseParams', () => {
 		it('parses standard Cloudflare params', () => {
 			const qs = new URLSearchParams('width=640&height=360&mode=video&fit=contain');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.width).toBe(640);
 			expect(result.height).toBe(360);
 			expect(result.mode).toBe('video');
@@ -13,7 +13,7 @@ describe('params/schema', () => {
 		});
 
 		it('returns empty object for no params', () => {
-			const result = parseParams(new URLSearchParams());
+			const { params: result } = parseParams(new URLSearchParams());
 			expect(result.width).toBeUndefined();
 			expect(result.height).toBeUndefined();
 			expect(result.mode).toBeUndefined();
@@ -21,58 +21,69 @@ describe('params/schema', () => {
 
 		it('clamps width/height to 10-2000', () => {
 			const qs = new URLSearchParams('width=5&height=3000');
-			const result = parseParams(qs);
+			const { params: result, warnings } = parseParams(qs);
 			expect(result.width).toBeUndefined();
 			expect(result.height).toBeUndefined();
+			expect(warnings).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ param: 'width', value: '5' }),
+					expect.objectContaining({ param: 'height', value: '3000' }),
+				]),
+			);
 		});
 
 		it('rejects invalid mode', () => {
 			const qs = new URLSearchParams('mode=invalid');
-			const result = parseParams(qs);
+			const { params: result, warnings } = parseParams(qs);
 			expect(result.mode).toBeUndefined();
+			expect(warnings).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ param: 'mode', value: 'invalid' }),
+				]),
+			);
 		});
 
 		it('parses time and duration strings', () => {
 			const qs = new URLSearchParams('time=5s&duration=30s');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.time).toBe('5s');
 			expect(result.duration).toBe('30s');
 		});
 
 		it('parses audio boolean', () => {
 			const qs = new URLSearchParams('audio=false');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.audio).toBe(false);
 		});
 
 		it('parses format', () => {
 			const qs = new URLSearchParams('format=jpg');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.format).toBe('jpg');
 		});
 
 		it('parses filename', () => {
 			const qs = new URLSearchParams('filename=my-clip');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.filename).toBe('my-clip');
 		});
 
 		it('parses derivative name', () => {
 			const qs = new URLSearchParams('derivative=tablet');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.derivative).toBe('tablet');
 		});
 
 		it('ignores unknown params', () => {
 			const qs = new URLSearchParams('width=640&bogus=xyz&debug=true');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.width).toBe(640);
 			expect((result as Record<string, unknown>).bogus).toBeUndefined();
 		});
 
 		it('parses container-only params: fps, speed, rotate, crop, bitrate', () => {
 			const qs = new URLSearchParams('fps=30&speed=1.5&rotate=90&crop=100:100:0:0&bitrate=2M');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.fps).toBe(30);
 			expect(result.speed).toBe(1.5);
 			expect(result.rotate).toBe(90);
@@ -82,7 +93,7 @@ describe('params/schema', () => {
 
 		it('parses playback hint params', () => {
 			const qs = new URLSearchParams('loop=true&autoplay=true&muted=true&preload=metadata');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.loop).toBe(true);
 			expect(result.autoplay).toBe(true);
 			expect(result.muted).toBe(true);
@@ -91,29 +102,56 @@ describe('params/schema', () => {
 
 		it('parses imageCount for spritesheets', () => {
 			const qs = new URLSearchParams('imageCount=10');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.imageCount).toBe(10);
 		});
 
 		it('parses dpr', () => {
 			const qs = new URLSearchParams('dpr=2.5');
-			const result = parseParams(qs);
+			const { params: result } = parseParams(qs);
 			expect(result.dpr).toBe(2.5);
+		});
+
+		it('returns warnings for invalid params', () => {
+			const qs = new URLSearchParams('width=abc&fit=invalid&fps=-5');
+			const { params, warnings } = parseParams(qs);
+			// Invalid values are dropped
+			expect(params.width).toBeUndefined();
+			expect(params.fit).toBeUndefined();
+			expect(params.fps).toBeUndefined();
+			// Warnings produced for each
+			expect(warnings.length).toBeGreaterThanOrEqual(3);
+			expect(warnings).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ param: 'width' }),
+					expect.objectContaining({ param: 'fit' }),
+					expect.objectContaining({ param: 'fps' }),
+				]),
+			);
+		});
+
+		it('returns no warnings for valid params', () => {
+			const qs = new URLSearchParams('width=640&height=360&mode=video');
+			const { warnings } = parseParams(qs);
+			expect(warnings).toEqual([]);
 		});
 	});
 
 	describe('translateAkamaiParams', () => {
-		it('translates imwidth to width', () => {
+		it('captures imwidth as rawImWidth (not forwarded as width)', () => {
 			const qs = new URLSearchParams('imwidth=1080');
-			const { params } = translateAkamaiParams(qs);
-			expect(params.get('width')).toBe('1080');
+			const { params, rawImWidth } = translateAkamaiParams(qs);
+			expect(rawImWidth).toBe(1080);
+			expect(params.has('width')).toBe(false);
 			expect(params.has('imwidth')).toBe(false);
 		});
 
-		it('translates imheight to height', () => {
+		it('captures imheight as rawImHeight (not forwarded as height)', () => {
 			const qs = new URLSearchParams('imheight=720');
-			const { params } = translateAkamaiParams(qs);
-			expect(params.get('height')).toBe('720');
+			const { params, rawImHeight } = translateAkamaiParams(qs);
+			expect(rawImHeight).toBe(720);
+			expect(params.has('height')).toBe(false);
+			expect(params.has('imheight')).toBe(false);
 		});
 
 		it('translates impolicy to derivative', () => {
@@ -164,8 +202,10 @@ describe('params/schema', () => {
 
 		it('preserves non-Akamai params', () => {
 			const qs = new URLSearchParams('imwidth=1080&mode=video&derivative=tablet');
-			const { params } = translateAkamaiParams(qs);
-			expect(params.get('width')).toBe('1080');
+			const { params, rawImWidth } = translateAkamaiParams(qs);
+			// imwidth is captured as rawImWidth, not forwarded as width
+			expect(rawImWidth).toBe(1080);
+			expect(params.has('width')).toBe(false);
 			expect(params.get('mode')).toBe('video');
 			expect(params.get('derivative')).toBe('tablet');
 		});
@@ -184,9 +224,36 @@ describe('params/schema', () => {
 
 		it('consumes imref (not passed through)', () => {
 			const qs = new URLSearchParams('imref=test&imwidth=800');
-			const { params } = translateAkamaiParams(qs);
+			const { params, rawImWidth } = translateAkamaiParams(qs);
 			expect(params.has('imref')).toBe(false);
-			expect(params.get('width')).toBe('800');
+			expect(rawImWidth).toBe(800);
+			expect(params.has('width')).toBe(false);
+		});
+
+		it('captures imwidth=2160 as rawImWidth=2160', () => {
+			const qs = new URLSearchParams('imwidth=2160');
+			const { rawImWidth, params } = translateAkamaiParams(qs);
+			expect(rawImWidth).toBe(2160);
+			expect(params.has('width')).toBe(false);
+		});
+
+		it('imwidth with impolicy — explicit derivative wins', () => {
+			const qs = new URLSearchParams('imwidth=1080&impolicy=tablet');
+			const { params, rawImWidth } = translateAkamaiParams(qs);
+			// impolicy maps to derivative
+			expect(params.get('derivative')).toBe('tablet');
+			// imwidth captured as raw hint, not forwarded as width
+			expect(rawImWidth).toBe(1080);
+			expect(params.has('width')).toBe(false);
+		});
+
+		it('imwidth with explicit width — explicit width wins', () => {
+			const qs = new URLSearchParams('imwidth=1080&width=640');
+			const { params, rawImWidth } = translateAkamaiParams(qs);
+			// Explicit width is passed through as-is
+			expect(params.get('width')).toBe('640');
+			// imwidth still captured as raw hint
+			expect(rawImWidth).toBe(1080);
 		});
 
 		it('extracts im-viewwidth/im-viewheight/im-density as client hints', () => {

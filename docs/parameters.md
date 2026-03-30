@@ -37,8 +37,8 @@ Single translation function in `params/schema.ts`. Produces a new URLSearchParam
 
 | Akamai Param | Canonical | Value Translation | Notes |
 |-------------|-----------|-------------------|-------|
-| `imwidth` | `width` | direct | Primary IMQuery param; used for derivative matching |
-| `imheight` | `height` | direct | Used with imwidth for derivative matching |
+| `imwidth` | (breakpoint match) | Matched against responsive breakpoints to select a derivative | NOT forwarded as `width` — used only for derivative selection |
+| `imheight` | (breakpoint match) | Matched against responsive breakpoints to select a derivative | NOT forwarded as `height` — used only for derivative selection |
 | `imref` | consumed | parsed as `key=value,key=value` | Derivative matching context, not forwarded |
 | `impolicy` | `derivative` | direct | Akamai "policy" = our "derivative" |
 | `imformat` | `format` | `h264`->`mp4`; `h265`/`vp9`/`av1`->container | Codec selection |
@@ -65,10 +65,14 @@ Single translation function in `params/schema.ts`. Produces a new URLSearchParam
 ### IMQuery derivative matching
 
 `?imwidth=1080` -> find closest derivative via breakpoint mapping -> `tablet` (1280x720).
+`?imwidth=2160` -> breakpoint match -> `desktop` (1920x1080). Any value works, including >2000.
 
-- Width-only: uses breakpoint ranges from responsive config
-- Width+height: Euclidean distance with aspect ratio weighting
-- Matching happens in `params/schema.ts`, result is a derivative name that feeds into standard resolution
+- `imwidth`/`imheight` are captured as raw values by `translateAkamaiParams()` but NOT forwarded as `width`/`height`
+- The transform handler matches the raw value against `config.responsive.breakpoints` (sorted ascending by `maxWidth`)
+- First breakpoint where `imwidth <= maxWidth` wins
+- No breakpoint match -> falls back to `config.responsive.defaultDerivative`
+- If `impolicy` (explicit derivative) is also present, it takes priority over breakpoint matching
+- Matching happens in `handlers/transform.ts` before Zod validation, so values >2000 work correctly
 
 ## Auto mode switching
 

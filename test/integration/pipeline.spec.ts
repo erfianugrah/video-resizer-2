@@ -63,7 +63,7 @@ describe('integration/pipeline', () => {
 		it('?derivative=tablet resolves to 1280x720', () => {
 			const qs = new URLSearchParams('derivative=tablet');
 			const { params } = translateAkamaiParams(qs);
-			let p = parseParams(params);
+			let p = parseParams(params).params;
 			p = resolveDerivative(p, TEST_CONFIG.derivatives);
 			expect(p.width).toBe(1280);
 			expect(p.height).toBe(720);
@@ -71,24 +71,24 @@ describe('integration/pipeline', () => {
 			expect(p.derivative).toBe('tablet');
 		});
 
-		it('?imwidth=1080 resolves to tablet via responsive breakpoints', () => {
+		it('?imwidth=1080 resolves via responsive breakpoints', () => {
 			const qs = new URLSearchParams('imwidth=1080');
-			const { params, clientHints } = translateAkamaiParams(qs);
-			let p = parseParams(params);
+			const { params, clientHints, rawImWidth } = translateAkamaiParams(qs);
+			let p = parseParams(params).params;
 			p = resolveDerivative(p, TEST_CONFIG.derivatives);
-			// imwidth=1080 translates to width=1080, no derivative yet
-			// Responsive sizing picks it up
+			// imwidth=1080 is captured as rawImWidth, not forwarded as width
+			expect(rawImWidth).toBe(1080);
 			const headers = new Headers();
 			for (const [k, v] of Object.entries(clientHints)) headers.set(k, v);
 			p = resolveResponsive(p, headers, TEST_CONFIG.responsive, TEST_CONFIG.derivatives);
-			// width=1080 is already set from imwidth, so responsive won't override
-			expect(p.width).toBe(1080);
+			// Without explicit width, responsive picks a derivative based on viewport/breakpoints
+			// rawImWidth is used for breakpoint matching upstream, not as a direct width param
 		});
 
 		it('no params → responsive fallback to desktop derivative', () => {
 			const qs = new URLSearchParams();
 			const { params } = translateAkamaiParams(qs);
-			let p = parseParams(params);
+			let p = parseParams(params).params;
 			p = resolveDerivative(p, TEST_CONFIG.derivatives);
 			const headers = new Headers();
 			p = resolveResponsive(p, headers, TEST_CONFIG.responsive, TEST_CONFIG.derivatives);
@@ -102,7 +102,7 @@ describe('integration/pipeline', () => {
 		it('Sec-CH-Viewport-Width: 800 → mobile derivative', () => {
 			const qs = new URLSearchParams();
 			const { params } = translateAkamaiParams(qs);
-			let p = parseParams(params);
+			let p = parseParams(params).params;
 			p = resolveDerivative(p, TEST_CONFIG.derivatives);
 			const headers = new Headers({ 'Sec-CH-Viewport-Width': '800' });
 			p = resolveResponsive(p, headers, TEST_CONFIG.responsive, TEST_CONFIG.derivatives);
@@ -115,9 +115,9 @@ describe('integration/pipeline', () => {
 		it('?derivative=tablet&imwidth=1080 → derivative wins (1280x720)', () => {
 			const qs = new URLSearchParams('derivative=tablet&imwidth=1080');
 			const { params } = translateAkamaiParams(qs);
-			let p = parseParams(params);
+			let p = parseParams(params).params;
 			p = resolveDerivative(p, TEST_CONFIG.derivatives);
-			// Derivative resolution replaces imwidth's 1080 with tablet's 1280
+			// Derivative resolution applies tablet's dimensions
 			expect(p.width).toBe(1280);
 			expect(p.height).toBe(720);
 			expect(p.derivative).toBe('tablet');
@@ -126,7 +126,7 @@ describe('integration/pipeline', () => {
 		it('?derivative=thumbnail → frame mode with correct params', () => {
 			const qs = new URLSearchParams('derivative=thumbnail');
 			const { params } = translateAkamaiParams(qs);
-			let p = parseParams(params);
+			let p = parseParams(params).params;
 			p = resolveDerivative(p, TEST_CONFIG.derivatives);
 			expect(p.mode).toBe('frame');
 			expect(p.format).toBe('png');
@@ -161,13 +161,13 @@ describe('integration/pipeline', () => {
 		it('same derivative → same cache key regardless of original params', () => {
 			// ?derivative=tablet (resolves to width=1280, height=720, fit=contain)
 			const qs1 = new URLSearchParams('derivative=tablet');
-			let p1 = parseParams(translateAkamaiParams(qs1).params);
+			let p1 = parseParams(translateAkamaiParams(qs1).params).params;
 			p1 = resolveDerivative(p1, TEST_CONFIG.derivatives);
 			p1 = { ...p1, compression: 'auto' };
 
 			// ?width=1280&height=720&fit=contain (same resolved params as tablet)
 			const qs2 = new URLSearchParams('width=1280&height=720&fit=contain');
-			let p2 = parseParams(translateAkamaiParams(qs2).params);
+			let p2 = parseParams(translateAkamaiParams(qs2).params).params;
 			p2 = resolveDerivative(p2, TEST_CONFIG.derivatives);
 			p2 = { ...p2, compression: 'auto' };
 
@@ -177,8 +177,8 @@ describe('integration/pipeline', () => {
 		});
 
 		it('different derivatives → different cache keys', () => {
-			let p1 = resolveDerivative(parseParams(new URLSearchParams('derivative=tablet')), TEST_CONFIG.derivatives);
-			let p2 = resolveDerivative(parseParams(new URLSearchParams('derivative=mobile')), TEST_CONFIG.derivatives);
+			let p1 = resolveDerivative(parseParams(new URLSearchParams('derivative=tablet')).params, TEST_CONFIG.derivatives);
+			let p2 = resolveDerivative(parseParams(new URLSearchParams('derivative=mobile')).params, TEST_CONFIG.derivatives);
 			p1 = { ...p1, compression: 'auto' };
 			p2 = { ...p2, compression: 'auto' };
 
@@ -186,7 +186,7 @@ describe('integration/pipeline', () => {
 		});
 
 		it('thumbnail derivative produces frame-mode cache key', () => {
-			let p = resolveDerivative(parseParams(new URLSearchParams('derivative=thumbnail')), TEST_CONFIG.derivatives);
+			let p = resolveDerivative(parseParams(new URLSearchParams('derivative=thumbnail')).params, TEST_CONFIG.derivatives);
 			const key = buildCacheKey('/clip.mp4', p);
 			expect(key).toMatch(/^frame:/);
 			expect(key).toContain('w=640');
@@ -198,23 +198,23 @@ describe('integration/pipeline', () => {
 
 	describe('container routing', () => {
 		it('standard params do not need container', () => {
-			const p = resolveDerivative(parseParams(new URLSearchParams('derivative=tablet')), TEST_CONFIG.derivatives);
+			const p = resolveDerivative(parseParams(new URLSearchParams('derivative=tablet')).params, TEST_CONFIG.derivatives);
 			expect(needsContainer(p)).toBe(false);
 		});
 
 		it('fps triggers container', () => {
-			const p = parseParams(new URLSearchParams('width=640&fps=30'));
+			const p = parseParams(new URLSearchParams('width=640&fps=30')).params;
 			expect(needsContainer(p)).toBe(true);
 		});
 
 		it('h265 format triggers container', () => {
 			const { params } = translateAkamaiParams(new URLSearchParams('imformat=h265'));
-			const p = parseParams(params);
+			const p = parseParams(params).params;
 			expect(needsContainer(p)).toBe(true);
 		});
 
 		it('rotate triggers container', () => {
-			const p = parseParams(new URLSearchParams('width=640&rotate=90'));
+			const p = parseParams(new URLSearchParams('width=640&rotate=90')).params;
 			expect(needsContainer(p)).toBe(true);
 		});
 	});

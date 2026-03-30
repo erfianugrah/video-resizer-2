@@ -623,7 +623,7 @@ test('job: GET /admin/jobs without auth returns 401', async () => {
 
 test('job: GET /admin/jobs with auth returns job list', async () => {
 	const r = await GET('/admin/jobs?hours=24&limit=10', {
-		headers: { Authorization: `Bearer ${process.env.CONFIG_API_TOKEN ?? 'test-analytics-token-2026'}` },
+		headers: { Authorization: `Bearer ${process.env.CONFIG_API_TOKEN}` },
 	});
 	assertEq(r.status, 200, 'status');
 	const body = await r.json() as any;

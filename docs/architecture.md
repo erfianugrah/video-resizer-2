@@ -18,8 +18,9 @@ Worker Middleware Pipeline
   |
   v
 Param Resolution
-  |-- Akamai/IMQuery translation (impolicy -> derivative, imwidth -> width, etc.)
-  |-- Parse canonical params (Zod validation, clamping, defaults)
+  |-- Akamai/IMQuery translation (impolicy -> derivative, imformat -> format, etc.)
+  |-- IMQuery breakpoint matching (imwidth/imheight -> derivative via breakpoints)
+  |-- Parse canonical params (Zod validation with warnings for invalid values)
   |-- Resolve derivative (named preset overlays width/height/quality/etc.)
   |-- Responsive sizing (Client Hints / CF-Device-Type / User-Agent cascade)
   |
@@ -38,12 +39,16 @@ Cache Lookup (Workers run BEFORE cache — CDN cache is only checked via fetch()
   |
   v
 Source Resolution + Transform
+  |-- Container-only params + R2 (<=256MB) -> FFmpeg container (sync)
+  |-- Container-only params + R2 (>256MB) -> FFmpeg container (async via queue)
+  |-- Container-only params + remote (<=256MB) -> FFmpeg container (sync)
+  |-- Container-only params + remote (>256MB) -> FFmpeg container (async via queue)
   |-- R2 source (<=100MB) -> env.MEDIA binding
   |-- R2 source (100-256MB) -> FFmpeg container (sync, streamed through DO)
   |-- R2 source (>256MB) -> FFmpeg container (async via queue, container fetches directly)
   |-- Remote source (<=100 MiB) -> cdn-cgi/media URL
   |-- Remote source (>100 MiB) -> FFmpeg container via queue
-  |-- Container-only params (fps, speed, rotate, etc.) -> FFmpeg container
+  |-- Binding fallback (MEDIA_ERROR + >256MB) -> FFmpeg container (async via queue)
   |
   v
 Response Processing
@@ -103,7 +108,7 @@ needsContainer = (
 );
 ```
 
-When `needsContainer` is true or the source exceeds the binding/cdn-cgi size limits, the request routes to the container tier.
+When `needsContainer` is true or the source exceeds the binding/cdn-cgi size limits, the request routes to the container tier. All container paths check source size: files >256MB always use the async queue path (container fetches directly via URL) to avoid streaming large files through the DO and hitting Worker memory/timeout limits.
 
 ## Dedup stack
 
@@ -111,7 +116,7 @@ When `needsContainer` is true or the source exceeds the binding/cdn-cgi size lim
 |-------|-------|---------------------|
 | Edge cache (`caches.default`) | Per data center | Local data-center cache (same store as CDN). Workers run before cache; `cache.match()`/`cache.put()` are direct API calls. No tiered caching via Cache API. |
 | R2 persistent store | Global | Transform results across all colos |
-| `RequestCoalescer` (in-memory LRU) | Per-isolate | Concurrent identical transforms in same Worker invocation |
+| `RequestCoalescer` (in-memory LRU) | Per-isolate | Concurrent identical transforms in same Worker invocation. 60s safety timeout prevents stuck entries from blocking forever. 202 responses are excluded (they produce nothing for joiners). |
 | Container DO `jobInFlight` flag | Per-transform (global) | Duplicate async container dispatches |
 | Queue consumer R2 check | Global | Container retries after result already stored |
 | Source cache (`_source-cache/`) | Global | Multiple containers downloading same source file |
