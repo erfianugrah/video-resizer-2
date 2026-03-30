@@ -12,6 +12,9 @@
 		"test:e2e": "vitest run --config vitest.e2e.config.ts",
 		"test:smoke": "npx tsx scripts/smoke.ts",
 		"test:smoke:container": "npx tsx scripts/smoke.ts --container",
+		"test:audit": "npx tsx scripts/transform-audit.ts",
+		"test:audit:probe": "npx tsx scripts/transform-audit.ts --probe",
+		"test:audit:container": "npx tsx scripts/transform-audit.ts --container",
 		"test:browser": "npx playwright test",
 		"dashboard:build": "cd dashboard && npx astro build",
 		"dashboard:dev": "cd dashboard && npx astro dev"

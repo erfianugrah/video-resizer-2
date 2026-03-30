@@ -693,6 +693,7 @@ export async function transformHandler(c: HonoContext) {
 						if (object) {
 							sourceType = 'r2';
 							etag = object.etag;
+							transformSource = 'passthrough';
 							transformed = new Response(object.body, {
 								headers: { 'Content-Type': object.httpMetadata?.contentType ?? 'video/mp4' },
 							});
@@ -702,6 +703,7 @@ export async function transformHandler(c: HonoContext) {
 						const resp = await fetch(source.url.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, ''));
 						if (resp.ok) {
 							sourceType = source.type;
+							transformSource = 'passthrough';
 							transformed = resp;
 							break;
 						}
