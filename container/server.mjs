@@ -374,6 +374,9 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 		return args;
 	} else {
 		args.push('-c:v', 'libx264');
+		// Force 8-bit output for H.264. Without this, 10-bit sources (e.g. HEVC
+		// Main 10) produce High 10 profile which lacks mobile/web decoder support.
+		args.push('-pix_fmt', 'yuv420p');
 	}
 
 	// Movflags for streaming
