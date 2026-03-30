@@ -120,13 +120,28 @@ The container outbound handler caches remote source downloads in R2 under `_sour
 - **Output streaming**: `createReadStream()` + explicit Content-Length from `stat()`
 - **Spritesheet**: `fps=1,tile=COLSxROWS` filter, imageCount defaults to 20, output as JPEG
 
-### Quality presets
+### Quality and compression
 
-| Preset | CRF | FFmpeg Preset |
-|--------|-----|---------------|
-| low | 28 | fast |
-| medium | 23 | medium |
-| high | 18 | medium |
+`quality` and `compression` are **independent controls** in the container:
+
+- **`quality`** = visual quality (CRF value). Lower CRF = better quality, larger file.
+- **`compression`** = encoding effort (`-preset`). Higher compression = slower encode, smaller file at same CRF.
+
+Both are no-ops for the binding and cdn-cgi tiers (those tiers have no quality/compression controls).
+
+| `quality` | CRF |
+|-----------|-----|
+| low | 28 |
+| medium | 23 |
+| high | 18 |
+| auto | 23 |
+
+| `compression` | FFmpeg `-preset` | Effect |
+|---------------|-----------------|--------|
+| low | ultrafast | Fast encode, larger file |
+| medium | medium | Balanced |
+| high | slow | Slow encode, smaller file |
+| auto | medium | Balanced |
 
 ## Outbound handler
 

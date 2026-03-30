@@ -17,7 +17,7 @@ All params are parsed once via Zod into a `TransformParams` object. Derivatives 
 | `filename` | string | alphanumeric, max 120 | N/A (response header) | same | Content-Disposition |
 | `derivative` | string | config key | N/A (resolved before transform) | same | Named preset |
 | `quality` | enum | low, medium, high, auto | **Not in binding** | ffmpeg `-crf` | Container only |
-| `compression` | enum | low, medium, high, auto | **Not in binding** | ffmpeg preset | Container only |
+| `compression` | enum | low, medium, high, auto | **Not in binding** | ffmpeg `-preset` (encode speed vs file size) | Container only |
 | `fps` | float | >0 | **Not in binding** | ffmpeg `-r` | Container only |
 | `speed` | float | >0 | **Not in binding** | ffmpeg setpts | Container only |
 | `rotate` | float | any | **Not in binding** | ffmpeg rotate | Container only |

@@ -24,11 +24,21 @@ import { availableParallelism, cpus } from 'node:os';
 const PORT = 8080;
 const WORK_DIR = '/tmp/ffmpeg-work';
 
-// Quality presets: CRF + preset
-const QUALITY_PRESETS = {
-	low: { crf: '28', preset: 'fast' },
-	medium: { crf: '23', preset: 'medium' },
-	high: { crf: '18', preset: 'medium' },
+// Quality presets: CRF values (visual quality)
+const QUALITY_CRF = {
+	low: '28',
+	medium: '23',
+	high: '18',
+	auto: '23',
+};
+
+// Compression presets: ffmpeg -preset (encode speed vs file size)
+// low compression = fast encode, larger file; high = slow encode, smaller file
+const COMPRESSION_PRESETS = {
+	low: 'ultrafast',
+	medium: 'medium',
+	high: 'slow',
+	auto: 'medium',
 };
 
 await mkdir(WORK_DIR, { recursive: true });
@@ -354,10 +364,12 @@ function buildFfmpegArgs(inputPath, outputPath, params) {
 		}
 	}
 
-	// Quality preset
-	const quality = params.quality || 'medium';
-	const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS.medium;
-	args.push('-crf', preset.crf, '-preset', preset.preset);
+	// Quality (CRF) and compression (preset) are independent controls:
+	//   quality = visual quality (CRF: lower = better quality, larger file)
+	//   compression = encode speed vs file size (preset: ultrafast...slow)
+	const crf = QUALITY_CRF[params.quality] || QUALITY_CRF.medium;
+	const preset = COMPRESSION_PRESETS[params.compression] || COMPRESSION_PRESETS.medium;
+	args.push('-crf', crf, '-preset', preset);
 
 	// Bitrate override
 	if (params.bitrate) {
