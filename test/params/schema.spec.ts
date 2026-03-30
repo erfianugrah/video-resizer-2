@@ -19,15 +19,15 @@ describe('params/schema', () => {
 			expect(result.mode).toBeUndefined();
 		});
 
-		it('clamps width/height to 10-2000', () => {
-			const qs = new URLSearchParams('width=5&height=3000');
+		it('clamps width/height to 10-8192', () => {
+			const qs = new URLSearchParams('width=5&height=9000');
 			const { params: result, warnings } = parseParams(qs);
 			expect(result.width).toBeUndefined();
 			expect(result.height).toBeUndefined();
 			expect(warnings).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({ param: 'width', value: '5' }),
-					expect.objectContaining({ param: 'height', value: '3000' }),
+					expect.objectContaining({ param: 'height', value: '9000' }),
 				]),
 			);
 		});

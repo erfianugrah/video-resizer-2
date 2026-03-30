@@ -80,8 +80,8 @@ const positiveFloat = z.coerce.number().positive().optional().catch(undefined);
 
 export const TransformParamsSchema = z.object({
 	// ── Binding-supported params ──────────────────────────────────────
-	width: intInRange(10, 2000),
-	height: intInRange(10, 2000),
+	width: intInRange(10, 8192),
+	height: intInRange(10, 8192),
 	mode: z.enum(['video', 'frame', 'spritesheet', 'audio']).optional().catch(undefined),
 	fit: z.enum(['contain', 'scale-down', 'cover']).optional().catch(undefined),
 	audio: z
@@ -273,7 +273,7 @@ export function parseParams(qs: URLSearchParams): { params: TransformParams; war
 			// Value was provided but Zod dropped it — produce a warning
 			const shape = TransformParamsSchema.shape[key as keyof typeof TransformParamsSchema.shape];
 			let reason = 'invalid value';
-			if (key === 'width' || key === 'height') reason = `must be integer between 10 and 2000, got ${value}`;
+			if (key === 'width' || key === 'height') reason = `must be integer between 10 and 8192, got ${value}`;
 			else if (key === 'mode') reason = `must be video|frame|spritesheet|audio, got "${value}"`;
 			else if (key === 'fit') reason = `must be contain|scale-down|cover, got "${value}"`;
 			else if (key === 'fps' || key === 'speed' || key === 'dpr') reason = `must be a positive number, got "${value}"`;

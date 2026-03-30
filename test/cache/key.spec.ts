@@ -73,23 +73,26 @@ describe('cache/key', () => {
 		expect(key).toMatch(/^video:my-videos\/test-file\.mp4:w=640$/);
 	});
 
-	it('appends etag prefix when provided', () => {
-		const params: TransformParams = { width: 640 };
-		const key = buildCacheKey('/test.mp4', params, undefined, 'abcdef1234567890');
-		expect(key).toBe('video:test.mp4:w=640:e=abcdef12');
+	it('includes container-only params in cache key', () => {
+		const params: TransformParams = { width: 640, fps: 30, speed: 2.0, rotate: 90, crop: '100:100:0:0', bitrate: '2M' };
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toContain(':fps=30');
+		expect(key).toContain(':spd=2');
+		expect(key).toContain(':rot=90');
+		expect(key).toContain(':crop=100:100:0:0');
+		expect(key).toContain(':br=2M');
 	});
 
-	it('different etags produce different keys', () => {
-		const params: TransformParams = { width: 640 };
-		const key1 = buildCacheKey('/test.mp4', params, undefined, 'aaaa1111');
-		const key2 = buildCacheKey('/test.mp4', params, undefined, 'bbbb2222');
-		expect(key1).not.toBe(key2);
+	it('different fps values produce different cache keys', () => {
+		const a: TransformParams = { width: 640, fps: 24 };
+		const b: TransformParams = { width: 640, fps: 60 };
+		expect(buildCacheKey('/test.mp4', a)).not.toBe(buildCacheKey('/test.mp4', b));
 	});
 
-	it('includes both etag and version when provided', () => {
-		const params: TransformParams = { width: 640 };
-		const key = buildCacheKey('/test.mp4', params, 5, 'abcdef12');
-		expect(key).toBe('video:test.mp4:w=640:e=abcdef12:v=5');
+	it('different speed values produce different cache keys', () => {
+		const a: TransformParams = { width: 640, speed: 1.5 };
+		const b: TransformParams = { width: 640, speed: 2.0 };
+		expect(buildCacheKey('/test.mp4', a)).not.toBe(buildCacheKey('/test.mp4', b));
 	});
 
 	it('includes imageCount in spritesheet cache key', () => {

@@ -10,20 +10,23 @@
  * ?width=1280&height=720 produce identical keys.
  *
  * This function is pure — no config lookups, no side effects.
+ *
+ * IMPORTANT: This is the single source of truth for cache keys. Compute the
+ * key ONCE per request (after params resolve + version fetch) and reuse it
+ * everywhere — edge cache, R2 lookup, coalescer, container jobs, response.
  */
 import type { TransformParams } from '../params/schema';
 
 /**
  * Build a deterministic cache key from path and resolved transform params.
  *
- * Format: `{mode}:{path}[:w={width}][:h={height}][:...params][:e={etag}][:v={version}]`
+ * Format: `{mode}:{path}[:w={width}][:h={height}][:...params][:v={version}]`
  *
  * @param path Request path
  * @param params Resolved transform params (derivative already applied)
- * @param version KV-backed version number for manual cache busting (remote sources)
- * @param etag R2 object etag for automatic cache busting (R2 sources)
+ * @param version KV-backed version number for manual cache busting
  */
-export function buildCacheKey(path: string, params: TransformParams, version?: number, etag?: string): string {
+export function buildCacheKey(path: string, params: TransformParams, version?: number): string {
 	const normalizedPath = path.replace(/^\/+/, '');
 	const mode = params.mode ?? 'video';
 
@@ -61,10 +64,15 @@ export function buildCacheKey(path: string, params: TransformParams, version?: n
 			break;
 	}
 
-	// R2 etag for automatic cache busting — short hash to keep key compact
-	if (etag) key += `:e=${etag.slice(0, 8)}`;
+	// Container-only params — affect the output, must be in the key.
+	// These are mode-independent (apply to video/audio transforms via ffmpeg).
+	if (params.fps) key += `:fps=${params.fps}`;
+	if (params.speed) key += `:spd=${params.speed}`;
+	if (params.rotate != null) key += `:rot=${params.rotate}`;
+	if (params.crop) key += `:crop=${params.crop}`;
+	if (params.bitrate) key += `:br=${params.bitrate}`;
 
-	// KV version for manual cache busting (remote sources)
+	// KV version for manual cache busting
 	if (version && version > 1) key += `:v=${version}`;
 
 	// Sanitize: replace spaces and invalid chars, preserve slashes and structure

@@ -254,7 +254,13 @@ export async function transformHandler(c: HonoContext) {
 		return c.json({ diagnostics, _meta: { ts: Date.now() } });
 	}
 
-	// 3. Cache lookup
+	// 3. Compute cache key ONCE — single source of truth for all lookups.
+	//    Version is fetched from KV before any cache/R2 checks so edge cache,
+	//    R2, coalescer, and container jobs all use the identical key.
+	const cacheVersion = await getVersion(c.env.CACHE_VERSIONS, path);
+	const cacheKey = buildCacheKey(path, params, cacheVersion);
+	const r2TransformKey = `_transformed/${cacheKey}`;
+
 	const cacheReq = new Request(requestUrl, c.req.raw);
 	const cache = caches.default;
 
@@ -283,12 +289,10 @@ export async function transformHandler(c: HonoContext) {
 				}, c.executionCtx.waitUntil.bind(c.executionCtx));
 
 				// Mark any matching job as complete (idempotent — skips already-complete jobs).
-				// Use base key + LIKE with ':' delimiter to avoid over-matching (e.g. w=80 vs w=800).
-				const baseKey = buildCacheKey(path, params);
 				c.executionCtx.waitUntil(
 					c.env.ANALYTICS.prepare(
-						'UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = COALESCE(output_size, ?) WHERE (job_id = ? OR job_id LIKE ?) AND status NOT IN (?, ?)',
-					).bind('complete', Date.now(), bytes, baseKey, baseKey + ':%', 'complete', 'failed').run().catch(() => {}),
+						'UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = COALESCE(output_size, ?) WHERE job_id = ? AND status NOT IN (?, ?)',
+					).bind('complete', Date.now(), bytes, cacheKey, 'complete', 'failed').run().catch(() => {}),
 				);
 			}
 
@@ -305,23 +309,14 @@ export async function transformHandler(c: HonoContext) {
 	//     NOTE: This runs even with ?debug. Debug skips edge cache reads/writes
 	//     but still serves from R2 — intentional, so container job results are
 	//     visible immediately and D1 job status gets updated.
-	const r2Version = await getVersion(c.env.CACHE_VERSIONS, path);
-	const r2CacheKey = buildCacheKey(path, params, r2Version);
-	const r2TransformKey = `_transformed/${r2CacheKey}`;
 	const r2Result = await c.env.VIDEOS.get(r2TransformKey);
 	if (r2Result) {
 		rlog.info('R2 transform cache HIT', { r2Key: r2TransformKey, size: r2Result.size });
 		// Update D1 job status to complete (if it was tracked as a queue job).
-		// Match on job_id LIKE pattern since the cache key may include etag
-		// that wasn't in the original job_id.
 		if (c.env.ANALYTICS) {
-			// The job_id in D1 is the callbackCacheKey from enqueue time.
-			// The r2CacheKey here may differ if etag/version changed.
-			// Use LIKE match on the base path+params portion.
-			const baseKey = buildCacheKey(path, params);
 			c.executionCtx.waitUntil(
-				c.env.ANALYTICS.prepare('UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = ? WHERE (job_id = ? OR job_id LIKE ?) AND status NOT IN (?, ?)')
-					.bind('complete', Date.now(), r2Result.size, r2CacheKey, baseKey + ':%', 'complete', 'failed')
+				c.env.ANALYTICS.prepare('UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = ? WHERE job_id = ? AND status NOT IN (?, ?)')
+					.bind('complete', Date.now(), r2Result.size, cacheKey, 'complete', 'failed')
 					.run().catch(() => {}),
 			);
 		}
@@ -343,7 +338,7 @@ export async function transformHandler(c: HonoContext) {
 		headers.set('X-Transform-Source', transformSource);
 		headers.set('X-Source-Type', storedSourceType);
 		headers.set('X-Origin', originMatch.origin.name);
-		headers.set('X-Cache-Key', r2CacheKey);
+		headers.set('X-Cache-Key', cacheKey);
 		headers.set('X-R2-Cache', 'HIT');
 		if (params.derivative) headers.set('X-Derivative', params.derivative);
 		if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
@@ -390,18 +385,17 @@ export async function transformHandler(c: HonoContext) {
 	// 4. Request coalescing — join in-flight transform if one exists
 	//    Only coalesce cacheable requests. Non-cacheable (debug/pending) responses
 	//    have live-stream bodies that can't be shared between requests.
-	const coalesceKey = buildCacheKey(path, params);
 	if (!skipCache) {
-		const inflight = coalescer.get(coalesceKey);
+		const inflight = coalescer.get(cacheKey);
 		if (inflight) {
-			rlog.info('Coalesced — waiting for in-flight transform', { path, coalesceKey });
+			rlog.info('Coalesced — waiting for in-flight transform', { path, cacheKey });
 			// Safety timeout: don't block forever if the in-flight transform hangs.
 			// After 60s, give up waiting and proceed with own transform.
 			const timeout = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 60_000));
 			const result = await Promise.race([inflight.then(() => 'done' as const), timeout]);
 			if (result === 'timeout') {
-				rlog.warn('Coalesce wait timed out after 60s, proceeding with own transform', { path, coalesceKey });
-				coalescer.delete(coalesceKey);
+				rlog.warn('Coalesce wait timed out after 60s, proceeding with own transform', { path, cacheKey });
+				coalescer.delete(cacheKey);
 			} else {
 				// Transform is done and stored — read from cache independently
 				const cached = await cache.match(cacheReq);
@@ -458,7 +452,6 @@ export async function transformHandler(c: HonoContext) {
 						// Size-based routing: very large files use async queue path
 						// to avoid streaming hundreds of MB through the DO.
 						if (object.size > 256 * 1024 * 1024) {
-							const pendingCacheKey = buildCacheKey(path, params, undefined, etag);
 							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
 							const fetchableUrl = remoteSource && 'url' in remoteSource
 								? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
@@ -467,26 +460,25 @@ export async function transformHandler(c: HonoContext) {
 								size: object.size, fetchableUrl,
 							});
 							object.body.cancel().catch(() => {});
-							const jobId = pendingCacheKey;
 							const result = await enqueueOrFireAndForget(c, {
-								jobId,
+								jobId: cacheKey,
 								path,
 								params,
 								sourceUrl: fetchableUrl,
-								callbackCacheKey: pendingCacheKey,
+								callbackCacheKey: cacheKey,
 								requestUrl,
 								origin: originMatch.origin.name,
 								sourceType,
 								etag,
 								version,
 							}, rlog);
-							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 							return {
 								transformed: new Response(
-									JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
+									JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
+									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
 								),
-								etag, version, sourceType,
+								etag, sourceType,
 							};
 						}
 
@@ -503,30 +495,28 @@ export async function transformHandler(c: HonoContext) {
 						sourceType = source.type;
 
 						if (contentLength > 256 * 1024 * 1024) {
-							const pendingCacheKey = buildCacheKey(path, params);
 							rlog.info('Container-only + oversized remote, enqueuing async container', {
 								size: contentLength, fetchableUrl: remoteUrl,
 							});
-							const jobId = pendingCacheKey;
 							const result = await enqueueOrFireAndForget(c, {
-								jobId,
+								jobId: cacheKey,
 								path,
 								params,
 								sourceUrl: remoteUrl,
-								callbackCacheKey: pendingCacheKey,
+								callbackCacheKey: cacheKey,
 								requestUrl,
 								origin: originMatch.origin.name,
 								sourceType,
 								etag,
 								version,
 							}, rlog);
-							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 							return {
 								transformed: new Response(
-									JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
+									JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
+									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
 								),
-								etag, version, sourceType,
+								etag, sourceType,
 							};
 						}
 
@@ -575,10 +565,9 @@ export async function transformHandler(c: HonoContext) {
 
 						if (object.size > 256 * 1024 * 1024) {
 							// Very large (>256MB): use queue-based async container.
-							const pendingCacheKey = buildCacheKey(path, params, undefined, etag);
 							// Prefer remote URL for large files — container fetches directly
-						// via internet (enableInternet=true), avoiding Worker memory limits.
-						// Fall back to /internal/r2-source only for R2-only sources.
+							// via internet (enableInternet=true), avoiding Worker memory limits.
+							// Fall back to /internal/r2-source only for R2-only sources.
 							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
 							const fetchableUrl = remoteSource && 'url' in remoteSource
 								? remoteSource.url.replace(/\/+$/, '') + path
@@ -587,26 +576,25 @@ export async function transformHandler(c: HonoContext) {
 								size: object.size, fetchableUrl,
 							});
 							object.body.cancel().catch(() => {});
-							const jobId = pendingCacheKey;
 							const result = await enqueueOrFireAndForget(c, {
-								jobId,
+								jobId: cacheKey,
 								path,
 								params,
 								sourceUrl: fetchableUrl,
-								callbackCacheKey: pendingCacheKey,
+								callbackCacheKey: cacheKey,
 								requestUrl,
 								origin: originMatch.origin.name,
 								sourceType,
 								etag,
 								version,
 							}, rlog);
-							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 							return {
 								transformed: new Response(
-									JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
+									JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
+									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
 								),
-								etag, version, sourceType,
+								etag, sourceType,
 							};
 						}
 
@@ -631,24 +619,22 @@ export async function transformHandler(c: HonoContext) {
 								// Check size: >256MB must use async path to avoid DO timeout
 								if (retryObject.size > 256 * 1024 * 1024) {
 									retryObject.body.cancel().catch(() => {});
-									const pendingCacheKey = buildCacheKey(path, params, undefined, etag);
 									const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
 									const fetchableUrl = remoteSource && 'url' in remoteSource
 										? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
 										: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
-									const jobId = pendingCacheKey;
 									const result = await enqueueOrFireAndForget(c, {
-										jobId, path, params, sourceUrl: fetchableUrl,
-										callbackCacheKey: pendingCacheKey, requestUrl,
+										jobId: cacheKey, path, params, sourceUrl: fetchableUrl,
+										callbackCacheKey: cacheKey, requestUrl,
 										origin: originMatch.origin.name, sourceType, etag, version,
 									}, rlog);
-									const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+									const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 									return {
 										transformed: new Response(
-											JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-											{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
+											JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
+											{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
 										),
-										etag, version, sourceType,
+										etag, sourceType,
 									};
 								}
 								const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
@@ -676,7 +662,7 @@ export async function transformHandler(c: HonoContext) {
 					break;
 				} else {
 					// Remote/fallback — check size via HEAD to decide routing
-					version = await getVersion(c.env.CACHE_VERSIONS, path);
+					version = cacheVersion;
 					sourceType = source.type;
 
 					let sourceUrl = resolved;
@@ -695,7 +681,6 @@ export async function transformHandler(c: HonoContext) {
 					const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
 
 					if (contentLength > CDN_CGI_SIZE_LIMIT && (c.env.FFMPEG_CONTAINER || c.env.TRANSFORM_QUEUE)) {
-						const pendingCacheKey = buildCacheKey(path, params, version);
 						// Use remote URL for container fetch — container downloads directly
 						// via internet (enableInternet=true), bypassing Worker memory limits.
 						// R2 binding path (/internal/r2-source) streams through the Worker
@@ -703,26 +688,24 @@ export async function transformHandler(c: HonoContext) {
 						rlog.info('Remote source exceeds cdn-cgi limit, enqueuing async container', {
 							size: contentLength, limit: CDN_CGI_SIZE_LIMIT, sourceUrl,
 						});
-						const containerSourceUrl = sourceUrl;
-						const jobId = pendingCacheKey;
 						const result = await enqueueOrFireAndForget(c, {
-							jobId,
+							jobId: cacheKey,
 							path,
 							params,
-							sourceUrl: containerSourceUrl,
-							callbackCacheKey: pendingCacheKey,
+							sourceUrl,
+							callbackCacheKey: cacheKey,
 							requestUrl,
 							origin: originMatch.origin.name,
 							sourceType,
 							version,
 						}, rlog);
-						const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+						const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 						return {
 							transformed: new Response(
-								JSON.stringify({ status: result.status, jobId, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
+								JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
+								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
 							),
-							etag, version, sourceType,
+							etag, sourceType,
 						};
 					}
 
@@ -748,25 +731,22 @@ export async function transformHandler(c: HonoContext) {
 
 						// 9402 = origin too large — route to container if available
 						if (cfErr === 9402 && (c.env.FFMPEG_CONTAINER || c.env.TRANSFORM_QUEUE)) {
-							const pendingCacheKey = buildCacheKey(path, params, version);
-							const containerSrc9402 = sourceUrl;
-							const jobId = pendingCacheKey;
 							const result = await enqueueOrFireAndForget(c, {
-								jobId,
+								jobId: cacheKey,
 								path,
 								params,
-								sourceUrl: containerSrc9402,
-								callbackCacheKey: pendingCacheKey,
+								sourceUrl,
+								callbackCacheKey: cacheKey,
 								requestUrl,
 								origin: originMatch.origin.name,
 								sourceType,
 								version,
 							}, rlog);
-							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 							return { transformed: new Response(
-								JSON.stringify({ status: result.status, jobId, message: `Source too large for edge transform (${cfErrDesc}). Processing via container.`, path, sse: sseUrl }),
-								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': jobId } },
-							), etag, version, sourceType };
+								JSON.stringify({ status: result.status, jobId: cacheKey, message: `Source too large for edge transform (${cfErrDesc}). Processing via container.`, path, sse: sseUrl }),
+								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
+							), etag, sourceType };
 						}
 						// All other CF errors — push descriptive message and try next source
 						errors.push(`${source.type}(p${source.priority}): cdn-cgi err=${cfErr} (${cfErrDesc}) for ${resolved}`);
@@ -847,13 +827,12 @@ export async function transformHandler(c: HonoContext) {
 			});
 		}
 
-		return { transformed, etag, version, sourceType, transformSource };
+		return { transformed, etag, sourceType, transformSource };
 	})();
 
 	// Register for coalescing, clean up when done
-	const responsePromise = transformPromise.then(async ({ transformed, etag, version, sourceType, transformSource: rawTransformSource }) => {
+	const responsePromise = transformPromise.then(async ({ transformed, etag, sourceType, transformSource: rawTransformSource }) => {
 		const transformSource = rawTransformSource ?? 'unknown';
-		const cacheKey = buildCacheKey(path, params, version, etag);
 		const durationMs = Math.round(performance.now() - startTime);
 
 		// 6. Response headers
@@ -1018,11 +997,11 @@ export async function transformHandler(c: HonoContext) {
 		const signal = responsePromise.then((resp) => {
 			// Remove coalescer entry for non-cacheable responses (202 pending)
 			if (resp.status === 202 || resp.headers.get('X-Transform-Pending') === 'true') {
-				coalescer.delete(coalesceKey);
+				coalescer.delete(cacheKey);
 			}
 		});
-		coalescer.set(coalesceKey, signal);
-		signal.finally(() => coalescer.delete(coalesceKey));
+		coalescer.set(cacheKey, signal);
+		signal.finally(() => coalescer.delete(cacheKey));
 	}
 
 	return await responsePromise;
