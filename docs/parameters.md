@@ -84,3 +84,17 @@ Detection priority:
 3. User-Agent parsing (fallback)
 
 Network-aware: `ECT`, `Downlink`, `Sec-CH-Save-Data` headers can downgrade quality.
+
+## Codec output (not configurable)
+
+H.264 profile, level, pixel format, and color space are determined by the
+transform path encoder — not by request parameters. No API exists to control these.
+
+| Property | Binding | CDN-CGI | Container |
+|----------|---------|---------|-----------|
+| Profile | High (always) | High (always) | High (libx264 default) |
+| Level | 5.2 (always, CF bug) | Auto-scales with resolution | Auto (ffmpeg) |
+| Pixel format | yuv420p | yuv420p (usually; intermittent 10-bit from HEVC sources) | yuv420p (forced via `-pix_fmt`) |
+| Color space | Not emitted | Preserved from source | ffmpeg default (bt709) |
+
+See `docs/transform-audit.md` for full ffprobe data.

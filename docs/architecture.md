@@ -125,4 +125,19 @@ When `needsContainer` is true or the source exceeds the binding/cdn-cgi size lim
 | Container fallback (reactive) | Binding MediaError | Re-fetch from R2, route to FFmpeg container |
 | Container fallback (proactive) | Source >100MB or container-only params | Route directly to container |
 | cdn-cgi 9402 fallback | cdn-cgi origin too large error | Route to container |
-| Raw passthrough | All transforms fail | Serve untransformed source with appropriate headers |
+| Raw passthrough | All transforms fail | Serve untransformed source (`x-transform-source: passthrough`) |
+| cdn-cgi passthrough detection | cdn-cgi returns raw source size | Detected via Content-Length match, falls to next source |
+
+## Codec output behavior
+
+The binding and cdn-cgi APIs have no controls for H.264 profile, level, pixel
+format, or color space. These are determined entirely by Cloudflare's encoder.
+The container uses ffmpeg with explicit codec settings.
+
+See `docs/transform-audit.md` for full ffprobe data across all paths.
+
+| Path | Profile | Level | Bit depth | Color space | Notes |
+|------|---------|-------|-----------|-------------|-------|
+| binding | Always High | Always 5.2 | 8-bit | None emitted | Level 5.2 regardless of resolution (CF bug) |
+| cdn-cgi | Always High | Auto (1.0–4.0) | Usually 8-bit | Preserved from source | Intermittent 10-bit from HEVC Main 10 sources |
+| container | High | Auto (ffmpeg) | 8-bit (forced) | ffmpeg default | `-pix_fmt yuv420p` forces 8-bit |

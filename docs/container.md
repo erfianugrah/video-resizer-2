@@ -113,6 +113,9 @@ The container outbound handler caches remote source downloads in R2 under `_sour
 - **Dynamic thread count**: `os.availableParallelism()` (up to 4 on max instance)
 - **Fast seeking**: `-ss` before `-i` for input seeking
 - **Even dimensions**: odd widths/heights rounded down for libx264
+- **Forced 8-bit output**: `-pix_fmt yuv420p` after `-c:v libx264`. Without this,
+  10-bit sources (HEVC Main 10) produce H.264 High 10 profile which most mobile
+  and web decoders cannot play. See `docs/transform-audit.md` for details.
 - **Source streaming**: `pipeline()` to disk, not `arrayBuffer()` (prevents OOM)
 - **Output streaming**: `createReadStream()` + explicit Content-Length from `stat()`
 - **Spritesheet**: `fps=1,tile=COLSxROWS` filter, imageCount defaults to 20, output as JPEG
