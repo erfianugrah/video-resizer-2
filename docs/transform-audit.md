@@ -1,77 +1,237 @@
 # Transform Codec Audit
 
-> Generated: 2026-03-30T15:04:15.364Z
-> Base URL: `https://videos.erfi.io`
-> Total probed: 0
+Date: 2026-03-30  
+Target: `https://videos.erfi.io`  
+Probed: 116 transforms, 52 anomalies
 
-## Source Files
+## Sources
 
-| File | Codec | Profile | Level | Resolution | Pix Fmt | Color |
-|------|-------|---------|-------|------------|---------|-------|
-| rocky.mp4 | H.264 | High | 4.1 | 1920x1080 | yuvj420p | bt709 |
-| erfi-135kg.mp4 | HEVC | Main 10 | 5.1 | 1080x1920 | yuv420p10le | BT.2020 / HLG |
+| File | Size | Codec | Profile | Level | Res | Pix Fmt | Color | Route |
+|------|------|-------|---------|-------|-----|---------|-------|-------|
+| rocky.mp4 | 40 MB | H.264 | High | 4.1 | 1920x1080 | yuvj420p | bt709 | `/videos/` R2->binding, `/` remote->cdn-cgi |
+| erfi-135kg.mp4 | 232 MB | HEVC | Main 10 | 5.1 | 1080x1920 | yuv420p10le | BT.2020/HLG | `/` remote->cdn-cgi |
 
-## Anomalies
+## binding (43 transforms, 43 flagged)
 
-None detected.
-## Key Findings
+| Params | Actual | Codec | Profile | Level | Res | Pix Fmt | Bits | Color | Flag |
+|--------|--------|-------|---------|-------|-----|---------|------|-------|------|
+| w=128 | binding | h264 | High | 5.2 | 128x72 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.0 for 128x72@30fps |
+| w=160 | **cached** | h264 | High | 5.2 | 160x90 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.1 for 160x90@30fps |
+| w=176 | **cached** | h264 | High | 5.2 | 176x100 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.1 for 176x100@30fps |
+| w=192 | **cached** | h264 | High | 5.2 | 192x108 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.1 for 192x108@30fps |
+| w=240 | **cached** | h264 | High | 5.2 | 240x136 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.2 for 240x136@30fps |
+| w=320 | **cached** | h264 | High | 5.2 | 320x180 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.3 for 320x180@30fps |
+| w=480 | **cached** | h264 | High | 5.2 | 480x270 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.0 for 480x270@30fps |
+| w=640 | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| w=720 | **cached** | h264 | High | 5.2 | 720x406 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 720x406@30fps |
+| w=854 | **cached** | h264 | High | 5.2 | 854x480 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| w=1080 | **cached** | h264 | High | 5.2 | 1080x608 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 1080x608@30fps |
+| w=1280 | **cached** | h264 | High | 5.2 | 1280x720 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| w=1440 | **cached** | h264 | High | 5.2 | 1440x810 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.1 for 1440x810@30fps |
+| w=1920 | **cached** | h264 | High | 5.2 | 1920x1080 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| h=180 | **cached** | h264 | High | 5.2 | 320x180 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.3 for 320x180@30fps |
+| h=240 | **cached** | h264 | High | 5.2 | 426x240 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.0 for 426x240@30fps |
+| h=360 | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| h=480 | **cached** | h264 | High | 5.2 | 854x480 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| h=720 | **cached** | h264 | High | 5.2 | 1280x720 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| h=1080 | **cached** | h264 | High | 5.2 | 1920x1080 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| 320x240/contain | **cached** | h264 | High | 5.2 | 320x180 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.3 for 320x180@30fps |
+| 640x360/contain | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| 854x480/contain | **cached** | h264 | High | 5.2 | 854x480 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| 1280x720/contain | **cached** | h264 | High | 5.2 | 1280x720 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| 1920x1080/contain | **cached** | h264 | High | 5.2 | 1920x1080 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| 320x240/cover | **cached** | h264 | High | 5.2 | 320x240 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.3 for 320x240@30fps |
+| 640x360/cover | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| 854x480/cover | **cached** | h264 | High | 5.2 | 854x480 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| 1280x720/cover | **cached** | h264 | High | 5.2 | 1280x720 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| 1920x1080/cover | **cached** | h264 | High | 5.2 | 1920x1080 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| 320x240/scale-down | **cached** | h264 | High | 5.2 | 320x180 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.3 for 320x180@30fps |
+| 640x360/scale-down | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| 854x480/scale-down | **cached** | h264 | High | 5.2 | 854x480 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| 1280x720/scale-down | **cached** | h264 | High | 5.2 | 1280x720 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| 1920x1080/scale-down | **cached** | h264 | High | 5.2 | 1920x1080 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| 640x640 | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| 800x600 | **cached** | h264 | High | 5.2 | 800x450 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 800x450@30fps |
+| 400x720 | **cached** | h264 | High | 5.2 | 400x226 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.3 for 400x226@30fps |
+| 1280x1280 | **cached** | h264 | High | 5.2 | 1280x720 | yuv420p | 8 |  | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| 300x300 | **cached** | h264 | High | 5.2 | 300x168 | yuv420p | 8 |  | Level 5.2 vs expected ≤1.3 for 300x168@30fps |
+| w=640/d=5s | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| w=640/t=2s/d=5s | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| w=640/audio=false | **cached** | h264 | High | 5.2 | 640x360 | yuv420p | 8 |  | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
 
-### 1. Binding always outputs Level 5.2
+## cdn-cgi (73 transforms, 9 flagged)
 
-The Media binding produced level(s): **** across ALL output
-resolutions (128x72 through 1920x1080). This is incorrect — Level 5.2 is meant
-for 4K content. A 128x72 video should be Level 1.0. This is a Cloudflare Media
-binding bug where the encoder does not auto-select the appropriate level.
+### rocky
 
-### 2. CDN-CGI correctly auto-selects levels
+| Params | Actual | Codec | Profile | Level | Res | Pix Fmt | Bits | Color | Flag |
+|--------|--------|-------|---------|-------|-----|---------|------|-------|------|
+| w=128 | **cached** | h264 | High | 1.0 | 128x72 | yuv420p | 8 | bt709 |  |
+| w=160 | **cached** | h264 | High | 1.1 | 160x90 | yuv420p | 8 | bt709 |  |
+| w=176 | **cached** | h264 | High | 1.1 | 176x98 | yuv420p | 8 | bt709 |  |
+| w=192 | **cached** | h264 | High | 1.1 | 192x108 | yuv420p | 8 | bt709 |  |
+| w=240 | **cached** | h264 | High | 1.2 | 240x134 | yuv420p | 8 | bt709 |  |
+| w=320 | **cached** | h264 | High | 1.3 | 320x180 | yuv420p | 8 | bt709 |  |
+| w=480 | **cached** | h264 | High | 2.1 | 480x270 | yuv420p | 8 | bt709 |  |
+| w=640 | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
+| w=720 | **cached** | h264 | High | 3.0 | 720x404 | yuv420p | 8 | bt709 |  |
+| w=854 | **cached** | h264 | High | 3.1 | 852x480 | yuv420p | 8 | bt709 |  |
+| w=1080 | **cached** | h264 | High | 3.1 | 1080x608 | yuv420p | 8 | bt709 |  |
+| w=1280 | **cached** | h264 | High | 3.1 | 1280x720 | yuv420p | 8 | bt709 |  |
+| w=1440 | **cached** | h264 | High | 3.2 | 1440x810 | yuv420p | 8 | bt709 |  |
+| w=1920 | **cached** | h264 | High | 4.0 | 1920x1080 | yuv420p | 8 | bt709 |  |
+| h=180 | **cached** | h264 | High | 1.3 | 320x180 | yuv420p | 8 | bt709 |  |
+| h=240 | **cached** | h264 | High | 2.1 | 426x240 | yuv420p | 8 | bt709 |  |
+| h=360 | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
+| h=480 | **cached** | h264 | High | 3.1 | 852x480 | yuv420p | 8 | bt709 |  |
+| h=720 | **cached** | h264 | High | 3.1 | 1280x720 | yuv420p | 8 | bt709 |  |
+| h=1080 | **cached** | h264 | High | 4.0 | 1920x1080 | yuv420p | 8 | bt709 |  |
+| 320x240/contain | **cached** | h264 | High | 1.3 | 320x180 | yuv420p | 8 | bt709 |  |
+| 640x360/contain | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
+| 854x480/contain | **cached** | h264 | High | 3.1 | 852x480 | yuv420p | 8 | bt709 |  |
+| 1280x720/contain | **cached** | h264 | High | 3.1 | 1280x720 | yuv420p | 8 | bt709 |  |
+| 1920x1080/contain | **cached** | h264 | High | 4.0 | 1920x1080 | yuv420p | 8 | bt709 |  |
+| 320x240/cover | **cached** | h264 | High | 1.3 | 320x240 | yuv420p | 8 | bt709 |  |
+| 640x360/cover | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
+| 854x480/cover | **cached** | h264 | High | 3.1 | 854x480 | yuv420p | 8 | bt709 |  |
+| 1280x720/cover | **cached** | h264 | High | 3.1 | 1280x720 | yuv420p | 8 | bt709 |  |
+| 1920x1080/cover | **cached** | h264 | High | 4.0 | 1920x1080 | yuv420p | 8 | bt709 |  |
+| 320x240/scale-down | **cached** | h264 | High | 1.3 | 320x180 | yuv420p | 8 | bt709 |  |
+| 640x360/scale-down | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
+| 854x480/scale-down | **cached** | h264 | High | 3.1 | 852x480 | yuv420p | 8 | bt709 |  |
+| 1280x720/scale-down | **cached** | h264 | High | 3.1 | 1280x720 | yuv420p | 8 | bt709 |  |
+| 1920x1080/scale-down | **cached** | h264 | High | 4.0 | 1920x1080 | yuv420p | 8 | bt709 |  |
+| 640x640 | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
+| 800x600 | **cached** | h264 | High | 3.1 | 800x450 | yuv420p | 8 | bt709 |  |
+| 400x720 | **cached** | h264 | High | 1.3 | 400x224 | yuv420p | 8 | bt709 |  |
+| 300x300 | **cached** | h264 | High | 1.3 | 300x168 | yuv420p | 8 | bt709 |  |
+| w=640/d=5s | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
+| w=640/t=2s/d=5s | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
+| w=640/audio=false | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt709 |  |
 
-CDN-CGI produced levels: **** — scaling correctly
-with output resolution per the H.264 specification.
+### erfi
 
-### 3. HEVC Main 10 → H.264 transcode is inconsistent
+| Params | Actual | Codec | Profile | Level | Res | Pix Fmt | Bits | Color | Flag |
+|--------|--------|-------|---------|-------|-----|---------|------|-------|------|
+| w=128 | **cached** | h264 | High 10 | 1.2 | 128x228 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
+| w=160 | **cached** | h264 | High | 1.2 | 160x284 | yuv420p | 8 | bt2020nc |  |
+| w=176 | **cached** | h264 | High | 1.3 | 176x312 | yuv420p | 8 | bt2020nc |  |
+| w=192 | **cached** | h264 | High | 1.3 | 192x340 | yuv420p | 8 | bt2020nc |  |
+| w=240 | **cached** | h264 | High | 2.1 | 240x426 | yuv420p | 8 | bt2020nc |  |
+| w=320 | **cached** | h264 | High | 3.0 | 320x568 | yuv420p | 8 | bt2020nc |  |
+| w=480 | **cached** | h264 | High | 3.1 | 480x852 | yuv420p | 8 | bt2020nc |  |
+| w=640 | **cached** | h264 | High | 3.1 | 640x1138 | yuv420p | 8 | bt2020nc |  |
+| w=720 | **cached** | h264 | High | 3.1 | 720x1280 | yuv420p | 8 | bt2020nc |  |
+| w=854 | **cached** | h264 | High 10 | 4.0 | 854x1518 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
+| w=1080 | **cached** | h264 | High 10 | 4.0 | 1080x1920 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
+| w=1280 | **cached** | h264 | High | 4.0 | 1080x1920 | yuv420p | 8 | bt2020nc |  |
+| h=240 | **cached** | h264 | High | 1.2 | 134x240 | yuv420p | 8 | bt2020nc |  |
+| h=360 | **cached** | h264 | High | 1.3 | 202x358 | yuv420p | 8 | bt2020nc |  |
+| h=480 | **cached** | h264 | High 10 | 2.1 | 270x480 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
+| h=720 | **cached** | h264 | High | 3.0 | 404x720 | yuv420p | 8 | bt2020nc |  |
+| h=1080 | **cached** | h264 | High 10 | 3.1 | 608x1080 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
+| 640x360/contain | **cached** | h264 | High | 1.3 | 202x360 | yuv420p | 8 | bt2020nc |  |
+| 640x360/cover | **cached** | h264 | High | 3.0 | 640x360 | yuv420p | 8 | bt2020nc |  |
+| 320x240/scale-down | **cached** | h264 | High 10 | 1.2 | 136x240 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
+| 640x360/scale-down | **cached** | h264 | High | 1.3 | 202x360 | yuv420p | 8 | bt2020nc |  |
+| 1280x720/scale-down | **cached** | h264 | High | 3.0 | 404x720 | yuv420p | 8 | bt2020nc |  |
+| 360x640 | **cached** | h264 | High | 3.0 | 360x640 | yuv420p | 8 | bt2020nc |  |
+| 480x854 | **cached** | h264 | High | 3.1 | 480x852 | yuv420p | 8 | bt2020nc |  |
+| 540x960 | **cached** | h264 | High | 3.1 | 540x960 | yuv420p | 8 | bt2020nc |  |
+| 720x1280 | **cached** | h264 | High 10 | 3.1 | 720x1280 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
+| 640x640 | **cached** | h264 | High | 3.0 | 360x640 | yuv420p | 8 | bt2020nc |  |
+| 1080x1080 | **cached** | h264 | High 10 | 3.1 | 608x1080 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
+| 300x300 | **cached** | h264 | High | 1.3 | 168x300 | yuv420p | 8 | bt2020nc |  |
+| w=640/d=5s | **cached** | h264 | High | 3.1 | 640x1138 | yuv420p | 8 | bt2020nc |  |
+| w=640/audio=false | **cached** | h264 | High 10 | 3.1 | 640x1138 | yuv420p10le | 10 | bt2020nc | High 10 profile, 10-bit output (yuv420p10le) |
 
-Of 0 erfi transforms, **0 output 10-bit** (High 10 / yuv420p10le)
-and **0 correctly downconverted to 8-bit** (High / yuv420p).
-The 10-bit outputs will cause playback failures on most mobile browsers and
-hardware decoders that lack High 10 profile support.
+## Flagged
 
-### 4. Profile is always High
+| Label | Path | Profile | Level | Res | Pix Fmt | Issue |
+|-------|------|---------|-------|-----|---------|-------|
+| rocky/binding/w=128 | binding | High | 5.2 | 128x72 | yuv420p | Level 5.2 vs expected ≤1.0 for 128x72@30fps |
+| rocky/binding/w=160 | cached | High | 5.2 | 160x90 | yuv420p | Level 5.2 vs expected ≤1.1 for 160x90@30fps |
+| rocky/binding/w=176 | cached | High | 5.2 | 176x100 | yuv420p | Level 5.2 vs expected ≤1.1 for 176x100@30fps |
+| rocky/binding/w=192 | cached | High | 5.2 | 192x108 | yuv420p | Level 5.2 vs expected ≤1.1 for 192x108@30fps |
+| rocky/binding/w=240 | cached | High | 5.2 | 240x136 | yuv420p | Level 5.2 vs expected ≤1.2 for 240x136@30fps |
+| rocky/binding/w=320 | cached | High | 5.2 | 320x180 | yuv420p | Level 5.2 vs expected ≤1.3 for 320x180@30fps |
+| rocky/binding/w=480 | cached | High | 5.2 | 480x270 | yuv420p | Level 5.2 vs expected ≤2.0 for 480x270@30fps |
+| rocky/binding/w=640 | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| rocky/binding/w=720 | cached | High | 5.2 | 720x406 | yuv420p | Level 5.2 vs expected ≤2.2 for 720x406@30fps |
+| rocky/binding/w=854 | cached | High | 5.2 | 854x480 | yuv420p | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| rocky/binding/w=1080 | cached | High | 5.2 | 1080x608 | yuv420p | Level 5.2 vs expected ≤3.0 for 1080x608@30fps |
+| rocky/binding/w=1280 | cached | High | 5.2 | 1280x720 | yuv420p | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| rocky/binding/w=1440 | cached | High | 5.2 | 1440x810 | yuv420p | Level 5.2 vs expected ≤3.1 for 1440x810@30fps |
+| rocky/binding/w=1920 | cached | High | 5.2 | 1920x1080 | yuv420p | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| rocky/binding/h=180 | cached | High | 5.2 | 320x180 | yuv420p | Level 5.2 vs expected ≤1.3 for 320x180@30fps |
+| rocky/binding/h=240 | cached | High | 5.2 | 426x240 | yuv420p | Level 5.2 vs expected ≤2.0 for 426x240@30fps |
+| rocky/binding/h=360 | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| rocky/binding/h=480 | cached | High | 5.2 | 854x480 | yuv420p | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| rocky/binding/h=720 | cached | High | 5.2 | 1280x720 | yuv420p | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| rocky/binding/h=1080 | cached | High | 5.2 | 1920x1080 | yuv420p | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| rocky/binding/320x240/contain | cached | High | 5.2 | 320x180 | yuv420p | Level 5.2 vs expected ≤1.3 for 320x180@30fps |
+| rocky/binding/640x360/contain | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| rocky/binding/854x480/contain | cached | High | 5.2 | 854x480 | yuv420p | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| rocky/binding/1280x720/contain | cached | High | 5.2 | 1280x720 | yuv420p | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| rocky/binding/1920x1080/contain | cached | High | 5.2 | 1920x1080 | yuv420p | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| rocky/binding/320x240/cover | cached | High | 5.2 | 320x240 | yuv420p | Level 5.2 vs expected ≤1.3 for 320x240@30fps |
+| rocky/binding/640x360/cover | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| rocky/binding/854x480/cover | cached | High | 5.2 | 854x480 | yuv420p | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| rocky/binding/1280x720/cover | cached | High | 5.2 | 1280x720 | yuv420p | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| rocky/binding/1920x1080/cover | cached | High | 5.2 | 1920x1080 | yuv420p | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| rocky/binding/320x240/scale-down | cached | High | 5.2 | 320x180 | yuv420p | Level 5.2 vs expected ≤1.3 for 320x180@30fps |
+| rocky/binding/640x360/scale-down | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| rocky/binding/854x480/scale-down | cached | High | 5.2 | 854x480 | yuv420p | Level 5.2 vs expected ≤3.0 for 854x480@30fps |
+| rocky/binding/1280x720/scale-down | cached | High | 5.2 | 1280x720 | yuv420p | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| rocky/binding/1920x1080/scale-down | cached | High | 5.2 | 1920x1080 | yuv420p | Level 5.2 vs expected ≤3.2 for 1920x1080@30fps |
+| rocky/binding/640x640 | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| rocky/binding/800x600 | cached | High | 5.2 | 800x450 | yuv420p | Level 5.2 vs expected ≤3.0 for 800x450@30fps |
+| rocky/binding/400x720 | cached | High | 5.2 | 400x226 | yuv420p | Level 5.2 vs expected ≤1.3 for 400x226@30fps |
+| rocky/binding/1280x1280 | cached | High | 5.2 | 1280x720 | yuv420p | Level 5.2 vs expected ≤3.0 for 1280x720@30fps |
+| rocky/binding/300x300 | cached | High | 5.2 | 300x168 | yuv420p | Level 5.2 vs expected ≤1.3 for 300x168@30fps |
+| rocky/binding/w=640/d=5s | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| rocky/binding/w=640/t=2s/d=5s | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| rocky/binding/w=640/audio=false | cached | High | 5.2 | 640x360 | yuv420p | Level 5.2 vs expected ≤2.2 for 640x360@30fps |
+| erfi/cdn-cgi/w=128 | cached | High 10 | 1.2 | 128x228 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/w=128 | cached | High 10 | 1.2 | 128x228 | yuv420p10le | 10-bit output (yuv420p10le) |
+| erfi/cdn-cgi/w=854 | cached | High 10 | 4.0 | 854x1518 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/w=854 | cached | High 10 | 4.0 | 854x1518 | yuv420p10le | 10-bit output (yuv420p10le) |
+| erfi/cdn-cgi/w=1080 | cached | High 10 | 4.0 | 1080x1920 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/w=1080 | cached | High 10 | 4.0 | 1080x1920 | yuv420p10le | 10-bit output (yuv420p10le) |
+| erfi/cdn-cgi/h=480 | cached | High 10 | 2.1 | 270x480 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/h=480 | cached | High 10 | 2.1 | 270x480 | yuv420p10le | 10-bit output (yuv420p10le) |
+| erfi/cdn-cgi/h=1080 | cached | High 10 | 3.1 | 608x1080 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/h=1080 | cached | High 10 | 3.1 | 608x1080 | yuv420p10le | 10-bit output (yuv420p10le) |
+| erfi/cdn-cgi/320x240/scale-down | cached | High 10 | 1.2 | 136x240 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/320x240/scale-down | cached | High 10 | 1.2 | 136x240 | yuv420p10le | 10-bit output (yuv420p10le) |
+| erfi/cdn-cgi/720x1280 | cached | High 10 | 3.1 | 720x1280 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/720x1280 | cached | High 10 | 3.1 | 720x1280 | yuv420p10le | 10-bit output (yuv420p10le) |
+| erfi/cdn-cgi/1080x1080 | cached | High 10 | 3.1 | 608x1080 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/1080x1080 | cached | High 10 | 3.1 | 608x1080 | yuv420p10le | 10-bit output (yuv420p10le) |
+| erfi/cdn-cgi/w=640/audio=false | cached | High 10 | 3.1 | 640x1138 | yuv420p10le | High 10 profile — poor mobile/web decoder support |
+| erfi/cdn-cgi/w=640/audio=false | cached | High 10 | 3.1 | 640x1138 | yuv420p10le | 10-bit output (yuv420p10le) |
 
-Both binding and cdn-cgi always output H.264 **High** profile regardless of
-source (Main, High, or HEVC Main 10). This is acceptable — High profile provides
-better compression efficiency and is universally supported.
+## Summary
 
-### 5. Color metadata pass-through
+**binding** (43): levels=5.2, profiles=High, pix_fmt=yuv420p
+**cdn-cgi** (73): levels=1.0,1.1,1.2,1.3,2.1,3.0,3.1,3.2,4.0, profiles=High,High 10, pix_fmt=yuv420p,yuv420p10le
+**erfi HEVC->H.264** (31): 9 output 10-bit, 22 output 8-bit
 
-BT.2020/HLG color metadata from the HEVC source is preserved in H.264 output.
-When combined with 8-bit conversion, this creates an incorrect signal — the color
-space should be BT.709 for SDR H.264. However, most decoders handle this gracefully.
+## Parameters we send
 
-### 6. We have no control over these parameters
+binding: `width`, `height`, `fit`  
+cdn-cgi: `width`, `height`, `fit`, `mode`, `time`, `duration`, `format`, `audio`  
+No profile, level, bit depth, or color space controls exist in either API.
 
-The binding API (`src/transform/binding.ts`) only accepts: `width`, `height`, `fit`.
-The cdn-cgi URL builder (`src/transform/cdncgi.ts`) adds: `mode`, `time`, `duration`,
-`format`, `audio`. **Neither path exposes profile, level, pixel format, or color space
-controls.** These are entirely determined by the Cloudflare Media Transformations service.
+## H.264 Levels
 
-## H.264 Level Reference
-
-| Level | Max MB/s | Typical Max Resolution | Bitrate (High) |
-|-------|----------|------------------------|----------------|
-| 1.0 | 1,485 | 176x144@15fps | 80 kbps |
-| 1.2 | 3,000 | 320x240@10fps | 384 kbps |
-| 1.3 | 6,000 | 320x240@36fps | 768 kbps |
-| 2.1 | 19,800 | 480x360@30fps | 5 Mbps |
-| 3.0 | 40,500 | 720x480@30fps | 12.5 Mbps |
-| 3.1 | 108,000 | 1280x720@30fps | 17.5 Mbps |
-| 3.2 | 216,000 | 1280x1024@42fps | 25 Mbps |
-| 4.0 | 245,760 | 1920x1080@30fps | 25 Mbps |
-| 4.1 | 245,760 | 1920x1080@30fps | 62.5 Mbps |
-| 5.1 | 983,040 | 4096x2160@30fps | 300 Mbps |
-| **5.2** | **2,073,600** | **4096x2160@60fps** | **300 Mbps** |
-| 6.2 | 4,177,920 | 8192x4320@120fps | 800 Mbps |
-
-> **Level 5.2 on a 128x72 output is absurd** — it tells the decoder to prepare
-> for 4K60 content when the actual video is thumbnail-sized. While most software
-> decoders handle this gracefully, hardware decoders on constrained devices may
-> reject or mishandle the stream.
+| Level | Max MB/s | Typical Res |
+|-------|----------|-------------|
+| 1.0 | 1,485 | 176x144@15 |
+| 1.3 | 6,000 | 320x240@36 |
+| 2.1 | 19,800 | 480x360@30 |
+| 3.0 | 40,500 | 720x480@30 |
+| 3.1 | 108,000 | 1280x720@30 |
+| 4.0 | 245,760 | 1920x1080@30 |
+| 5.1 | 983,040 | 4096x2160@30 |
+| 5.2 | 2,073,600 | 4096x2160@60 |
+| 6.2 | 4,177,920 | 8192x4320@120 |

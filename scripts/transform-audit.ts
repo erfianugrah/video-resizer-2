@@ -552,149 +552,109 @@ async function main() {
 	const md: string[] = [];
 	md.push('# Transform Codec Audit');
 	md.push('');
-	md.push(`> Generated: ${new Date().toISOString()}`);
-	md.push(`> Base URL: \`${BASE}\``);
-	md.push(`> Total probed: ${rows.length}`);
+	md.push(`Date: ${new Date().toISOString().slice(0, 10)}  `);
+	md.push(`Target: \`${BASE}\`  `);
+	md.push(`Probed: ${rows.length} transforms, ${anomalyRows.length} anomalies`);
 	md.push('');
 
-	// Source files
-	md.push('## Source Files');
+	// Sources
+	md.push('## Sources');
 	md.push('');
-	md.push('| File | Codec | Profile | Level | Resolution | Pix Fmt | Color |');
-	md.push('|------|-------|---------|-------|------------|---------|-------|');
-	md.push('| rocky.mp4 | H.264 | High | 4.1 | 1920x1080 | yuvj420p | bt709 |');
-	md.push('| erfi-135kg.mp4 | HEVC | Main 10 | 5.1 | 1080x1920 | yuv420p10le | BT.2020 / HLG |');
+	md.push('| File | Size | Codec | Profile | Level | Res | Pix Fmt | Color | Route |');
+	md.push('|------|------|-------|---------|-------|-----|---------|-------|-------|');
+	md.push('| rocky.mp4 | 40 MB | H.264 | High | 4.1 | 1920x1080 | yuvj420p | bt709 | `/videos/` R2->binding, `/` remote->cdn-cgi |');
+	md.push('| erfi-135kg.mp4 | 232 MB | HEVC | Main 10 | 5.1 | 1080x1920 | yuv420p10le | BT.2020/HLG | `/` remote->cdn-cgi |');
 	md.push('');
 
-	// Per-path tables — group by expected path, show actual path when it differs
+	// Per-path tables
 	for (const path of ['binding', 'cdn-cgi', 'container'] as const) {
 		const pathRows = rows.filter((r) => r.expectedPath === path);
 		if (pathRows.length === 0) continue;
 
-		md.push(`## ${path === 'binding' ? 'Binding' : path === 'cdn-cgi' ? 'CDN-CGI' : 'Container'} Path`);
+		const pathAnom = pathRows.filter((r) => r.anomalies.length > 0).length;
+		md.push(`## ${path} (${pathRows.length} transforms, ${pathAnom} flagged)`);
 		md.push('');
 
-		// Group by source file
 		const sources = [...new Set(pathRows.map((r) => r.label.split('/')[0]))];
 		for (const src of sources) {
 			const srcRows = pathRows.filter((r) => r.label.startsWith(src + '/'));
-			if (sources.length > 1) {
-				md.push(`### ${src}`);
-				md.push('');
-			}
-			md.push('| Label | Actual Path | Codec | Profile | Level | Resolution | Pix Fmt | Bits | Color | Anomalies |');
-			md.push('|-------|-------------|-------|---------|-------|------------|---------|------|-------|-----------|');
+			if (sources.length > 1) md.push(`### ${src}\n`);
+			md.push('| Params | Actual | Codec | Profile | Level | Res | Pix Fmt | Bits | Color | Flag |');
+			md.push('|--------|--------|-------|---------|-------|-----|---------|------|-------|------|');
 			for (const r of srcRows) {
 				const shortLabel = r.label.replace(/^[^/]+\/[^/]+\//, '');
-				const color = r.colorSpace ? `${r.colorSpace}/${r.colorTransfer}` : '';
-				const anom = r.anomalies.length > 0 ? r.anomalies.join('; ') : '';
-				const pathCell = r.actualPath !== r.expectedPath ? `**${r.actualPath}**` : r.actualPath;
-				md.push(`| ${shortLabel} | ${pathCell} | ${r.codec} | ${r.profile} | ${r.levelStr} | ${r.width}x${r.height} | ${r.pixFmt} | ${r.bits} | ${color} | ${anom} |`);
+				const color = r.colorSpace || '';
+				const flag = r.anomalies.length > 0 ? r.anomalies.map((a) => a.split(' — ')[0]).join(', ') : '';
+				const ap = r.actualPath !== r.expectedPath ? `**${r.actualPath}**` : r.actualPath;
+				md.push(`| ${shortLabel} | ${ap} | ${r.codec} | ${r.profile} | ${r.levelStr} | ${r.width}x${r.height} | ${r.pixFmt} | ${r.bits} | ${color} | ${flag} |`);
 			}
 			md.push('');
 		}
 	}
 
-	// Anomalies section
-	md.push('## Anomalies');
-	md.push('');
-	if (anomalyRows.length === 0) {
-		md.push('None detected.');
-	} else {
+	// Anomalies — just a flat list, no prose
+	if (anomalyRows.length > 0) {
+		md.push('## Flagged');
+		md.push('');
+		md.push('| Label | Path | Profile | Level | Res | Pix Fmt | Issue |');
+		md.push('|-------|------|---------|-------|-----|---------|-------|');
 		for (const r of anomalyRows) {
-			md.push(`### \`${r.label}\``);
-			md.push('');
-			md.push(`- **Output:** ${r.codec} ${r.profile} Level ${r.levelStr}, ${r.width}x${r.height}, ${r.pixFmt} (${r.bits}-bit)`);
-			md.push(`- **Color:** ${r.colorSpace} / ${r.colorTransfer}`);
-			md.push(`- **Transform path:** ${r.expectedPath}`);
-			md.push('- **Issues:**');
-			for (const a of r.anomalies) md.push(`  - ${a}`);
-			md.push('');
+			for (const a of r.anomalies) {
+				md.push(`| ${r.label} | ${r.actualPath} | ${r.profile} | ${r.levelStr} | ${r.width}x${r.height} | ${r.pixFmt} | ${a} |`);
+			}
 		}
+		md.push('');
 	}
 
-	// Key findings
-	md.push('## Key Findings');
+	// Summary stats — computed, not editorialized
+	md.push('## Summary');
 	md.push('');
 
 	const bindingRows = rows.filter((r) => r.expectedPath === 'binding');
 	const cdncgiRows = rows.filter((r) => r.expectedPath === 'cdn-cgi');
-	const bindingLevels = [...new Set(bindingRows.map((r) => r.levelStr))];
-	const cdncgiLevels = [...new Set(cdncgiRows.map((r) => r.levelStr))];
 
-	md.push('### 1. Binding always outputs Level 5.2');
-	md.push('');
-	md.push(`The Media binding produced level(s): **${bindingLevels.join(', ')}** across ALL output`);
-	md.push('resolutions (128x72 through 1920x1080). This is incorrect — Level 5.2 is meant');
-	md.push('for 4K content. A 128x72 video should be Level 1.0. This is a Cloudflare Media');
-	md.push('binding bug where the encoder does not auto-select the appropriate level.');
-	md.push('');
-	md.push('### 2. CDN-CGI correctly auto-selects levels');
-	md.push('');
-	md.push(`CDN-CGI produced levels: **${cdncgiLevels.sort().join(', ')}** — scaling correctly`);
-	md.push('with output resolution per the H.264 specification.');
-	md.push('');
-	md.push('### 3. HEVC Main 10 → H.264 transcode is inconsistent');
-	md.push('');
-
-	const erfi10bit = rows.filter((r) => r.label.startsWith('erfi') && r.pixFmt.includes('10'));
-	const erfi8bit = rows.filter((r) => r.label.startsWith('erfi') && r.pixFmt === 'yuv420p');
-	md.push(`Of ${erfi10bit.length + erfi8bit.length} erfi transforms, **${erfi10bit.length} output 10-bit** (High 10 / yuv420p10le)`);
-	md.push(`and **${erfi8bit.length} correctly downconverted to 8-bit** (High / yuv420p).`);
-	md.push('The 10-bit outputs will cause playback failures on most mobile browsers and');
-	md.push('hardware decoders that lack High 10 profile support.');
-	md.push('');
-
-	if (erfi10bit.length > 0) {
-		md.push('10-bit outputs occurred at these sizes:');
-		for (const r of erfi10bit) {
-			md.push(`- \`${r.label}\`: ${r.width}x${r.height} → ${r.profile} ${r.pixFmt}`);
-		}
-		md.push('');
+	if (bindingRows.length > 0) {
+		const bLevels = [...new Set(bindingRows.map((r) => r.levelStr))];
+		const bProfiles = [...new Set(bindingRows.map((r) => r.profile))];
+		const bFmts = [...new Set(bindingRows.map((r) => r.pixFmt))];
+		md.push(`**binding** (${bindingRows.length}): levels=${bLevels.join(',')}, profiles=${bProfiles.join(',')}, pix_fmt=${bFmts.join(',')}`);
+	}
+	if (cdncgiRows.length > 0) {
+		const cLevels = [...new Set(cdncgiRows.map((r) => r.levelStr))].sort();
+		const cProfiles = [...new Set(cdncgiRows.map((r) => r.profile))];
+		const cFmts = [...new Set(cdncgiRows.map((r) => r.pixFmt))];
+		md.push(`**cdn-cgi** (${cdncgiRows.length}): levels=${cLevels.join(',')}, profiles=${cProfiles.join(',')}, pix_fmt=${cFmts.join(',')}`);
 	}
 
-	md.push('### 4. Profile is always High');
-	md.push('');
-	md.push('Both binding and cdn-cgi always output H.264 **High** profile regardless of');
-	md.push('source (Main, High, or HEVC Main 10). This is acceptable — High profile provides');
-	md.push('better compression efficiency and is universally supported.');
-	md.push('');
-	md.push('### 5. Color metadata pass-through');
-	md.push('');
-	md.push('BT.2020/HLG color metadata from the HEVC source is preserved in H.264 output.');
-	md.push('When combined with 8-bit conversion, this creates an incorrect signal — the color');
-	md.push('space should be BT.709 for SDR H.264. However, most decoders handle this gracefully.');
-	md.push('');
-	md.push('### 6. We have no control over these parameters');
-	md.push('');
-	md.push('The binding API (`src/transform/binding.ts`) only accepts: `width`, `height`, `fit`.');
-	md.push('The cdn-cgi URL builder (`src/transform/cdncgi.ts`) adds: `mode`, `time`, `duration`,');
-	md.push('`format`, `audio`. **Neither path exposes profile, level, pixel format, or color space');
-	md.push('controls.** These are entirely determined by the Cloudflare Media Transformations service.');
+	const erfi10bit = rows.filter((r) => r.label.startsWith('erfi') && r.pixFmt.includes('10'));
+	const erfiTotal = rows.filter((r) => r.label.startsWith('erfi'));
+	if (erfiTotal.length > 0) {
+		md.push(`**erfi HEVC->H.264** (${erfiTotal.length}): ${erfi10bit.length} output 10-bit, ${erfiTotal.length - erfi10bit.length} output 8-bit`);
+	}
 	md.push('');
 
-	// H.264 level reference
-	md.push('## H.264 Level Reference');
+	// API surface — what we can and can't control
+	md.push('## Parameters we send');
 	md.push('');
-	md.push('| Level | Max MB/s | Typical Max Resolution | Bitrate (High) |');
-	md.push('|-------|----------|------------------------|----------------|');
-	md.push('| 1.0 | 1,485 | 176x144@15fps | 80 kbps |');
-	md.push('| 1.2 | 3,000 | 320x240@10fps | 384 kbps |');
-	md.push('| 1.3 | 6,000 | 320x240@36fps | 768 kbps |');
-	md.push('| 2.1 | 19,800 | 480x360@30fps | 5 Mbps |');
-	md.push('| 3.0 | 40,500 | 720x480@30fps | 12.5 Mbps |');
-	md.push('| 3.1 | 108,000 | 1280x720@30fps | 17.5 Mbps |');
-	md.push('| 3.2 | 216,000 | 1280x1024@42fps | 25 Mbps |');
-	md.push('| 4.0 | 245,760 | 1920x1080@30fps | 25 Mbps |');
-	md.push('| 4.1 | 245,760 | 1920x1080@30fps | 62.5 Mbps |');
-	md.push('| 5.1 | 983,040 | 4096x2160@30fps | 300 Mbps |');
-	md.push('| **5.2** | **2,073,600** | **4096x2160@60fps** | **300 Mbps** |');
-	md.push('| 6.2 | 4,177,920 | 8192x4320@120fps | 800 Mbps |');
+	md.push('binding: `width`, `height`, `fit`  ');
+	md.push('cdn-cgi: `width`, `height`, `fit`, `mode`, `time`, `duration`, `format`, `audio`  ');
+	md.push('No profile, level, bit depth, or color space controls exist in either API.');
 	md.push('');
-	md.push('> **Level 5.2 on a 128x72 output is absurd** — it tells the decoder to prepare');
-	md.push('> for 4K60 content when the actual video is thumbnail-sized. While most software');
-	md.push('> decoders handle this gracefully, hardware decoders on constrained devices may');
-	md.push('> reject or mishandle the stream.');
+
+	// H.264 level reference — compact
+	md.push('## H.264 Levels');
+	md.push('');
+	md.push('| Level | Max MB/s | Typical Res |');
+	md.push('|-------|----------|-------------|');
+	md.push('| 1.0 | 1,485 | 176x144@15 |');
+	md.push('| 1.3 | 6,000 | 320x240@36 |');
+	md.push('| 2.1 | 19,800 | 480x360@30 |');
+	md.push('| 3.0 | 40,500 | 720x480@30 |');
+	md.push('| 3.1 | 108,000 | 1280x720@30 |');
+	md.push('| 4.0 | 245,760 | 1920x1080@30 |');
+	md.push('| 5.1 | 983,040 | 4096x2160@30 |');
+	md.push('| 5.2 | 2,073,600 | 4096x2160@60 |');
+	md.push('| 6.2 | 4,177,920 | 8192x4320@120 |');
 
 	writeFileSync(reportPath, md.join('\n') + '\n');
 	console.log(`\n  Report: ${reportPath}`);
@@ -706,9 +666,9 @@ async function main() {
 
 	// Exit code
 	if (anomalyRows.length > 0) {
-		console.log(`\n  ${RED}${anomalyRows.length} anomalies detected — review report${RESET}\n`);
+		console.log(`\n  ${RED}${anomalyRows.length} anomalies${RESET}\n`);
 	} else {
-		console.log(`\n  ${GREEN}All transforms within spec${RESET}\n`);
+		console.log(`\n  ${GREEN}Clean${RESET}\n`);
 	}
 }
 
