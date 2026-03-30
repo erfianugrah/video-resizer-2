@@ -24,7 +24,7 @@ type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
  * GET /internal/r2-source?key=path/to/file&bucket=VIDEOS
  */
 export async function getR2Source(c: HonoContext) {
-	requireAuth(c);
+	await requireAuth(c);
 	const key = c.req.query('key');
 	const bucketBinding = c.req.query('bucket') ?? 'VIDEOS';
 

@@ -88,7 +88,7 @@ export class FFmpegContainer extends Container {
  * in the URL, and we match on path prefix only. The catch-all `outbound`
  * handler sees every HTTP request regardless of destination host.
  */
-(FFmpegContainer as any).outbound = async (request: Request, env: any, _ctx: any) => {
+(FFmpegContainer as any).outbound = async (request: Request, env: any, ctx: any) => {
 	const url = new URL(request.url);
 
 	log.info('Container outbound', {
@@ -105,7 +105,10 @@ export class FFmpegContainer extends Container {
 		if (jobId) {
 			// Write phase + percent directly to D1 (SSE endpoint reads from D1)
 			const analyticsDb = (env as Record<string, unknown>).ANALYTICS as D1Database | undefined;
-			if (analyticsDb) updateJobProgress(analyticsDb, jobId, phase, percent);
+			if (analyticsDb) {
+				const p = updateJobProgress(analyticsDb, jobId, phase, percent);
+				if (ctx?.waitUntil) ctx.waitUntil(p);
+			}
 		}
 		return new Response('ok');
 	}
@@ -128,7 +131,10 @@ export class FFmpegContainer extends Container {
 		if (isError) {
 			const errBody = await request.text().catch(() => '');
 			log.error('Container async transform failed', { cacheKey, path, errorTail: errBody.slice(-1500) });
-			if (jobId && analyticsDb) failJob(analyticsDb, jobId, errBody.slice(-500));
+			if (jobId && analyticsDb) {
+				const p = failJob(analyticsDb, jobId, errBody.slice(-500));
+				if (ctx?.waitUntil) ctx.waitUntil(p);
+			}
 			return new Response(JSON.stringify({ ok: false, error: 'transform failed' }), { status: 200 });
 		}
 
@@ -141,20 +147,9 @@ export class FFmpegContainer extends Container {
 		const contentType = request.headers.get('Content-Type') ?? 'video/mp4';
 		const contentLength = request.headers.get('Content-Length');
 
-		const headers = new Headers();
-		headers.set('Content-Type', contentType);
-		if (contentLength) headers.set('Content-Length', contentLength);
-		headers.set('Cache-Control', 'public, max-age=86400');
-		headers.set('Accept-Ranges', 'bytes');
-		headers.set('Via', 'video-resizer');
-		headers.set('X-Transform-Source', 'container');
-
-		const cacheResponse = new Response(body, { status: 200, headers });
-		const cache = caches.default;
-		// Use the original user request URL so cache.match() finds it later.
-		// Fall back to https://{host}{path} if requestUrl wasn't provided.
+		// cacheUrl is stored in R2 metadata so the transform handler can
+		// build a correct edge-cache key when it reads the result back.
 		const cacheUrl = requestUrl || `https://${url.host}${path}`;
-		const cacheRequest = new Request(cacheUrl, { method: 'GET' });
 
 		// Store in R2 (globally consistent). The container may run in a
 		// different colo than the client, so caches.default won't help.
@@ -162,7 +157,10 @@ export class FFmpegContainer extends Container {
 		// streams into cache.put + serves to client in one shot.
 		// Store in R2 — container always sends Content-Length (from stat() on
 		// the ffmpeg output file), so we stream via FixedLengthStream.
-		if (jobId && analyticsDb) updateJobProgress(analyticsDb, jobId, 'uploading', 90);
+		if (jobId && analyticsDb) {
+			const p = updateJobProgress(analyticsDb, jobId, 'uploading', 90);
+			if (ctx?.waitUntil) ctx.waitUntil(p);
+		}
 
 		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
 		const r2Key = `_transformed/${cacheKey}`;
@@ -195,9 +193,12 @@ export class FFmpegContainer extends Container {
 		// the job is done. The DO's jobInFlight flag resets on next onStop
 		// or when the sleepAfter timer fires.)
 
-		// D1 complete is handled by completeJob below
+		// D1 complete — must use waitUntil so the write persists after response returns.
+		// Without this, the isolate may terminate before D1 commits, causing jobs to
+		// appear stuck until the queue consumer retries or the user refreshes.
 		if (jobId && analyticsDb) {
-			completeJob(analyticsDb, jobId, contentLength ? parseInt(contentLength, 10) : undefined);
+			const p = completeJob(analyticsDb, jobId, contentLength ? parseInt(contentLength, 10) : undefined);
+			if (ctx?.waitUntil) ctx.waitUntil(p);
 		}
 
 		log.info('Container result stored in R2', {

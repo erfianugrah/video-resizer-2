@@ -20,12 +20,12 @@ import * as log from '../log';
 type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
 
 export async function getConfig(c: HonoContext) {
-	requireAuth(c);
+	await requireAuth(c);
 	return c.json({ config: c.get('config'), _meta: { ts: Date.now() } });
 }
 
 export async function postConfig(c: HonoContext) {
-	requireAuth(c);
+	await requireAuth(c);
 	const body = await c.req.json();
 	const result = AppConfigSchema.safeParse(body);
 	if (!result.success) {
@@ -40,7 +40,7 @@ export async function postConfig(c: HonoContext) {
 }
 
 export async function postCacheBust(c: HonoContext) {
-	requireAuth(c);
+	await requireAuth(c);
 	const body = await c.req.json();
 	const path = body?.path;
 	if (typeof path !== 'string' || !path) {
@@ -52,7 +52,7 @@ export async function postCacheBust(c: HonoContext) {
 }
 
 export async function getAnalytics(c: HonoContext) {
-	requireAuth(c);
+	await requireAuth(c);
 	if (!c.env.ANALYTICS) throw new AppError(503, 'ANALYTICS_UNAVAILABLE', 'D1 ANALYTICS binding not configured');
 	const hours = parseInt(c.req.query('hours') ?? '24', 10);
 	const sinceMs = Date.now() - hours * 3600_000;
@@ -61,7 +61,7 @@ export async function getAnalytics(c: HonoContext) {
 }
 
 export async function getAnalyticsErrors(c: HonoContext) {
-	requireAuth(c);
+	await requireAuth(c);
 	if (!c.env.ANALYTICS) throw new AppError(503, 'ANALYTICS_UNAVAILABLE', 'D1 ANALYTICS binding not configured');
 	const hours = parseInt(c.req.query('hours') ?? '24', 10);
 	const limit = parseInt(c.req.query('limit') ?? '50', 10);

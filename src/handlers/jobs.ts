@@ -23,7 +23,7 @@ type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
  *   ?limit=50    — max results
  */
 export async function listJobsHandler(c: HonoContext) {
-	requireAuth(c);
+	await requireAuth(c);
 	if (!c.env.ANALYTICS) {
 		throw new AppError(503, 'ANALYTICS_UNAVAILABLE', 'D1 ANALYTICS binding not configured');
 	}
@@ -67,7 +67,7 @@ export async function listJobsHandler(c: HonoContext) {
  *   { "jobId": "...", "delete": true } — delete a job from D1 entirely
  */
 export async function retryJobHandler(c: HonoContext) {
-	requireAuth(c);
+	await requireAuth(c);
 	if (!c.env.ANALYTICS) throw new AppError(503, 'ANALYTICS_UNAVAILABLE', 'D1 binding not configured');
 
 	const body = await c.req.json();

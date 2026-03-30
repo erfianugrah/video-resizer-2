@@ -140,6 +140,23 @@ The `FFmpegContainer.outbound` static handler intercepts ALL outbound HTTP from 
 | Everything else (GET, >1MB) | GET | Proxy via fetch() with source dedup (R2 cache) |
 | Everything else | * | Proxy via fetch() with http->https upgrade |
 
+## D1 status safety
+
+- **UPSERT guards**: `registerJob` ON CONFLICT preserves terminal statuses (`complete`, `failed`). A queue retry will not reset a completed or deleted job back to `pending`.
+- **Transition guards**: All D1 update statements (`updateJobStatus`, `updateJobProgress`, `completeJob`, `failJob`) include `WHERE status NOT IN ('complete', 'failed')` to prevent backward transitions.
+- **`waitUntil` everywhere**: All fire-and-forget D1 writes are wrapped in `ctx.waitUntil()` — in the queue consumer, DLQ consumer, and container outbound handler. Without this, D1 writes may not persist before the isolate terminates.
+- **Functions return `Promise<void>`**: `completeJob`, `failJob`, `updateJobStatus`, `updateJobProgress` return the D1 promise so callers can pass it to `waitUntil()`.
+
+## Dashboard auth
+
+The dashboard uses cookie-based session auth (HMAC-signed, 24h expiry). Admin API endpoints (`/admin/*`) accept both:
+1. **Bearer token** in `Authorization` header (API clients, scripts, tests)
+2. **Session cookie** (`vr2_session`) set at login (browser dashboard)
+
+The dashboard no longer requires a separate API token input — the login screen sets the cookie, and all API calls use `credentials: 'same-origin'`.
+
+The active tab is persisted in the URL hash (`#jobs`, `#debug`) so page refresh stays on the same tab.
+
 ## Design lessons
 
 - **Don't ack on 202**: container accepting (202) != done. Ack only after R2 result confirmed.
@@ -147,4 +164,5 @@ The `FFmpegContainer.outbound` static handler intercepts ALL outbound HTTP from 
 - **`require()` in ESM crashes silently**: `server.mjs` must use `import` at top, not `require()` in functions.
 - **Edge cache hides D1 updates**: add D1 status updates in all serve paths (edge HIT, R2 HIT, fresh transform).
 - **Never `arrayBuffer()` on container output**: use `ReadableStream` directly to R2 `put()`. Container outputs can be hundreds of MB.
+- **Always `waitUntil` D1 writes**: fire-and-forget D1 writes in outbound handlers MUST use `ctx.waitUntil()` or the isolate may terminate before the write commits. This was the root cause of jobs not being marked complete until the next user refresh.
 - **`max_batch_timeout: 0` may break delivery**: use `5` instead.

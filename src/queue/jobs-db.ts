@@ -15,7 +15,9 @@ import * as log from '../log';
 const UPSERT_SQL = `
 INSERT INTO transform_jobs (job_id, path, origin, status, params_json, source_url, source_type, created_at)
 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
-ON CONFLICT(job_id) DO UPDATE SET status = 'pending', created_at = excluded.created_at
+ON CONFLICT(job_id) DO UPDATE SET
+  status = CASE WHEN transform_jobs.status IN ('complete', 'failed') THEN transform_jobs.status ELSE 'pending' END,
+  created_at = CASE WHEN transform_jobs.status IN ('complete', 'failed') THEN transform_jobs.created_at ELSE excluded.created_at END
 `;
 
 /** Register a new job in D1. Fire-and-forget. */
@@ -40,32 +42,36 @@ export function registerJob(
 	waitUntil(p);
 }
 
-const UPDATE_STATUS_SQL = `UPDATE transform_jobs SET status = ?, started_at = COALESCE(started_at, ?) WHERE job_id = ?`;
-const UPDATE_PROGRESS_SQL = `UPDATE transform_jobs SET status = ?, percent = ?, started_at = COALESCE(started_at, ?) WHERE job_id = ?`;
-const COMPLETE_SQL = `UPDATE transform_jobs SET status = 'complete', completed_at = ?, output_size = ?, percent = 100 WHERE job_id = ?`;
-const FAIL_SQL = `UPDATE transform_jobs SET status = 'failed', completed_at = ?, error = ? WHERE job_id = ?`;
+const UPDATE_STATUS_SQL = `UPDATE transform_jobs SET status = ?, started_at = COALESCE(started_at, ?) WHERE job_id = ? AND status NOT IN ('complete', 'failed')`;
+const UPDATE_PROGRESS_SQL = `UPDATE transform_jobs SET status = ?, percent = ?, started_at = COALESCE(started_at, ?) WHERE job_id = ? AND status NOT IN ('complete', 'failed')`;
+const COMPLETE_SQL = `UPDATE transform_jobs SET status = 'complete', completed_at = ?, output_size = ?, percent = 100 WHERE job_id = ? AND status != 'complete'`;
+const FAIL_SQL = `UPDATE transform_jobs SET status = 'failed', completed_at = ?, error = ? WHERE job_id = ? AND status != 'failed'`;
 
-/** Update job status in D1. Fire-and-forget. */
-export function updateJobStatus(db: D1Database, jobId: string, status: string): void {
-	db.prepare(UPDATE_STATUS_SQL).bind(status, Date.now(), jobId).run()
+/** Update job status in D1. Returns promise for waitUntil. */
+export function updateJobStatus(db: D1Database, jobId: string, status: string): Promise<void> {
+	return db.prepare(UPDATE_STATUS_SQL).bind(status, Date.now(), jobId).run()
+		.then(() => {})
 		.catch((err) => log.error('Job status update failed', { error: err instanceof Error ? err.message : String(err) }));
 }
 
-/** Update job status + percent progress in D1. Fire-and-forget. */
-export function updateJobProgress(db: D1Database, jobId: string, status: string, percent: number): void {
-	db.prepare(UPDATE_PROGRESS_SQL).bind(status, percent, Date.now(), jobId).run()
+/** Update job status + percent progress in D1. Returns promise for waitUntil. */
+export function updateJobProgress(db: D1Database, jobId: string, status: string, percent: number): Promise<void> {
+	return db.prepare(UPDATE_PROGRESS_SQL).bind(status, percent, Date.now(), jobId).run()
+		.then(() => {})
 		.catch((err) => log.error('Job progress update failed', { error: err instanceof Error ? err.message : String(err) }));
 }
 
-/** Mark job complete in D1. Fire-and-forget. */
-export function completeJob(db: D1Database, jobId: string, outputSize?: number): void {
-	db.prepare(COMPLETE_SQL).bind(Date.now(), outputSize ?? null, jobId).run()
+/** Mark job complete in D1. Returns promise for waitUntil. */
+export function completeJob(db: D1Database, jobId: string, outputSize?: number): Promise<void> {
+	return db.prepare(COMPLETE_SQL).bind(Date.now(), outputSize ?? null, jobId).run()
+		.then(() => {})
 		.catch((err) => log.error('Job complete update failed', { error: err instanceof Error ? err.message : String(err) }));
 }
 
-/** Mark job failed in D1. Fire-and-forget. */
-export function failJob(db: D1Database, jobId: string, error: string): void {
-	db.prepare(FAIL_SQL).bind(Date.now(), error.slice(0, 1000), jobId).run()
+/** Mark job failed in D1. Returns promise for waitUntil. */
+export function failJob(db: D1Database, jobId: string, error: string): Promise<void> {
+	return db.prepare(FAIL_SQL).bind(Date.now(), error.slice(0, 1000), jobId).run()
+		.then(() => {})
 		.catch((err) => log.error('Job fail update failed', { error: err instanceof Error ? err.message : String(err) }));
 }
 

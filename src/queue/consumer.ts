@@ -43,6 +43,7 @@ function toCallbackUrl(zoneHost: string, path: string): string {
 export async function handleQueue(
 	batch: MessageBatch<JobMessage>,
 	env: Env,
+	ctx: ExecutionContext,
 ): Promise<void> {
 	for (const message of batch.messages) {
 		const job = message.body;
@@ -60,7 +61,7 @@ export async function handleQueue(
 			if (r2Head) {
 				message.ack();
 				log.info('Queue: result already in R2', { jobId: job.jobId, size: r2Head.size });
-				if (env.ANALYTICS) completeJob(env.ANALYTICS, job.jobId, r2Head.size);
+				if (env.ANALYTICS) ctx.waitUntil(completeJob(env.ANALYTICS, job.jobId, r2Head.size));
 				continue;
 			}
 
@@ -68,7 +69,7 @@ export async function handleQueue(
 			if (!env.FFMPEG_CONTAINER) {
 				log.error('Queue: FFMPEG_CONTAINER binding missing');
 				message.ack(); // Can't process without container — don't retry forever
-				if (env.ANALYTICS) failJob(env.ANALYTICS, job.jobId, 'FFMPEG_CONTAINER binding missing');
+				if (env.ANALYTICS) ctx.waitUntil(failJob(env.ANALYTICS, job.jobId, 'FFMPEG_CONTAINER binding missing'));
 				continue;
 			}
 
@@ -88,7 +89,7 @@ export async function handleQueue(
 			// Don't overwrite in-progress status (transcoding/uploading) on retries —
 			// the container progress reports drive those transitions.
 			if (env.ANALYTICS && message.attempts <= 1) {
-				updateJobStatus(env.ANALYTICS, job.jobId, 'downloading');
+				ctx.waitUntil(updateJobStatus(env.ANALYTICS, job.jobId, 'downloading'));
 			}
 
 			const resp = await container.fetch('http://container/transform-url', {
@@ -136,6 +137,7 @@ export async function handleQueue(
 export async function handleDLQ(
 	batch: MessageBatch<JobMessage>,
 	env: Env,
+	ctx: ExecutionContext,
 ): Promise<void> {
 	for (const message of batch.messages) {
 		const job = message.body;
@@ -145,7 +147,7 @@ export async function handleDLQ(
 			attempts: message.attempts,
 		});
 		if (env.ANALYTICS) {
-			failJob(env.ANALYTICS, job.jobId, `Exhausted all retries after ${message.attempts} attempts`);
+			ctx.waitUntil(failJob(env.ANALYTICS, job.jobId, `Exhausted all retries after ${message.attempts} attempts`));
 		}
 		message.ack();
 	}

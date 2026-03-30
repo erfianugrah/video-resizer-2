@@ -128,7 +128,7 @@ async function enqueueOrFireAndForget(
 		const zoneHost = new URL(job.requestUrl).host;
 		const callbackUrl = toCallbackUrl(
 			zoneHost,
-			`/internal/container-result?path=${encodeURIComponent(job.path)}&cacheKey=${encodeURIComponent(job.callbackCacheKey)}&requestUrl=${encodeURIComponent(job.requestUrl)}`,
+			`/internal/container-result?path=${encodeURIComponent(job.path)}&cacheKey=${encodeURIComponent(job.callbackCacheKey)}&requestUrl=${encodeURIComponent(job.requestUrl)}&jobId=${encodeURIComponent(job.jobId)}`,
 		);
 		c.executionCtx.waitUntil(
 			transformViaContainerUrl(c.env.FFMPEG_CONTAINER, job.sourceUrl, job.params, instanceKey, callbackUrl)
@@ -254,12 +254,13 @@ export async function transformHandler(c: HonoContext) {
 					bytes,
 				}, c.executionCtx.waitUntil.bind(c.executionCtx));
 
-				// Mark any matching job as complete (idempotent — skips already-complete jobs)
+				// Mark any matching job as complete (idempotent — skips already-complete jobs).
+				// Use base key + LIKE with ':' delimiter to avoid over-matching (e.g. w=80 vs w=800).
 				const baseKey = buildCacheKey(path, params);
 				c.executionCtx.waitUntil(
 					c.env.ANALYTICS.prepare(
-						'UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = COALESCE(output_size, ?) WHERE job_id LIKE ? AND status NOT IN (?, ?)',
-					).bind('complete', Date.now(), bytes, baseKey + '%', 'complete', 'failed').run().catch(() => {}),
+						'UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = COALESCE(output_size, ?) WHERE (job_id = ? OR job_id LIKE ?) AND status NOT IN (?, ?)',
+					).bind('complete', Date.now(), bytes, baseKey, baseKey + ':%', 'complete', 'failed').run().catch(() => {}),
 				);
 			}
 
@@ -291,8 +292,8 @@ export async function transformHandler(c: HonoContext) {
 			// Use LIKE match on the base path+params portion.
 			const baseKey = buildCacheKey(path, params);
 			c.executionCtx.waitUntil(
-				c.env.ANALYTICS.prepare('UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = ? WHERE job_id LIKE ? AND status != ?')
-					.bind('complete', Date.now(), r2Result.size, baseKey + '%', 'complete')
+				c.env.ANALYTICS.prepare('UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = ? WHERE (job_id = ? OR job_id LIKE ?) AND status NOT IN (?, ?)')
+					.bind('complete', Date.now(), r2Result.size, r2CacheKey, baseKey + ':%', 'complete', 'failed')
 					.run().catch(() => {}),
 			);
 		}

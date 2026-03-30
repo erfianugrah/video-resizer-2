@@ -84,9 +84,9 @@ export default {
 	},
 	async queue(batch: MessageBatch<JobMessage>, env: Env, ctx: ExecutionContext) {
 		if (batch.queue === 'video-transform-dlq') {
-			await handleDLQ(batch, env);
+			await handleDLQ(batch, env, ctx);
 		} else {
-			await handleQueue(batch, env);
+			await handleQueue(batch, env, ctx);
 		}
 	},
 	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {

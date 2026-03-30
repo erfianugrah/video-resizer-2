@@ -151,7 +151,7 @@ function fmtLatency(ms: number | null): string {
 // ── Main Component ───────────────────────────────────────────────────
 
 /** Analytics dashboard tab showing request stats, breakdowns, and recent errors. */
-export function AnalyticsTab({ token }: { token: string }) {
+export function AnalyticsTab() {
 	const [hours, setHours] = useState(24);
 	const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
 	const [errors, setErrors] = useState<AnalyticsError[]>([]);
@@ -161,15 +161,18 @@ export function AnalyticsTab({ token }: { token: string }) {
 	const [showAdminErrors, setShowAdminErrors] = useState(false);
 
 	const fetchData = useCallback(async () => {
-		if (!token) { setError('Enter API token above'); setInitialLoad(false); return; }
 		setLoading(true);
 		setError('');
 		try {
+			const opts: RequestInit = { credentials: 'same-origin' };
 			const [summaryRes, errorsRes] = await Promise.all([
-				fetch(`${BASE}/admin/analytics?hours=${hours}`, { headers: { Authorization: `Bearer ${token}` } }),
-				fetch(`${BASE}/admin/analytics/errors?hours=${hours}&limit=50`, { headers: { Authorization: `Bearer ${token}` } }),
+				fetch(`${BASE}/admin/analytics?hours=${hours}`, opts),
+				fetch(`${BASE}/admin/analytics/errors?hours=${hours}&limit=50`, opts),
 			]);
-			if (summaryRes.status === 401) { setError('Invalid token'); return; }
+			if (summaryRes.status === 401) {
+				window.location.reload(); // session expired — reload to show login
+				return;
+			}
 			const summaryData = await summaryRes.json() as { summary: AnalyticsSummary };
 			const errorsData = await errorsRes.json() as { errors: AnalyticsError[] };
 			setSummary(summaryData.summary);
@@ -180,7 +183,7 @@ export function AnalyticsTab({ token }: { token: string }) {
 			setLoading(false);
 			setInitialLoad(false);
 		}
-	}, [token, hours]);
+	}, [hours]);
 
 	useEffect(() => { fetchData(); }, [fetchData]);
 

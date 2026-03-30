@@ -194,7 +194,7 @@ function JobCard({ job, stale, onRetry, onDelete, actionLoading }: {
 // ── Main Component ───────────────────────────────────────────────────
 
 /** Jobs dashboard tab showing active and recent container transform jobs. */
-export function JobsTab({ token }: { token: string }) {
+export function JobsTab() {
 	const [jobs, setJobs] = useState<JobRow[]>([]);
 	const [filter, setFilter] = useState('');
 	const [debouncedFilter, setDebouncedFilter] = useState('');
@@ -212,7 +212,6 @@ export function JobsTab({ token }: { token: string }) {
 
 	/** Retry or delete a job via the admin API. */
 	const jobAction = useCallback(async (jobId: string, action: 'retry' | 'delete') => {
-		if (!token) return;
 		setActionLoading(jobId);
 		try {
 			const body = action === 'delete'
@@ -220,7 +219,8 @@ export function JobsTab({ token }: { token: string }) {
 				: { jobId };
 			const resp = await fetch(`${BASE}/admin/jobs/retry`, {
 				method: 'POST',
-				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+				headers: { 'Content-Type': 'application/json' },
+				credentials: 'same-origin',
 				body: JSON.stringify(body),
 			});
 			if (!resp.ok) {
@@ -240,16 +240,16 @@ export function JobsTab({ token }: { token: string }) {
 		} finally {
 			setActionLoading(null);
 		}
-	}, [token]);
+	}, []);
 
 	/** Reset all stale jobs. */
 	const clearStale = useCallback(async () => {
-		if (!token) return;
 		setActionLoading('bulk-stale');
 		try {
 			const resp = await fetch(`${BASE}/admin/jobs/retry`, {
 				method: 'POST',
-				headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+				headers: { 'Content-Type': 'application/json' },
+				credentials: 'same-origin',
 				body: JSON.stringify({ staleMinutes: Math.round(STALE_MS / 60_000) }),
 			});
 			if (!resp.ok) {
@@ -268,7 +268,7 @@ export function JobsTab({ token }: { token: string }) {
 		} finally {
 			setActionLoading(null);
 		}
-	}, [token]);
+	}, []);
 
 	// Debounce filter input (300ms)
 	useEffect(() => {
@@ -277,16 +277,18 @@ export function JobsTab({ token }: { token: string }) {
 	}, [filter]);
 
 	const fetchJobs = useCallback(async () => {
-		if (!token) { setError('Enter API token above'); setInitialLoad(false); return; }
 		setLoading(true);
 		setError('');
 		try {
 			const params = new URLSearchParams({ hours: String(hours), limit: '100' });
 			if (debouncedFilter) params.set('filter', debouncedFilter);
 			const resp = await fetch(`${BASE}/admin/jobs?${params}`, {
-				headers: { Authorization: `Bearer ${token}` },
+				credentials: 'same-origin',
 			});
-			if (resp.status === 401) { setError('Invalid token'); return; }
+			if (resp.status === 401) {
+				window.location.reload(); // session expired — reload to show login
+				return;
+			}
 			if (!resp.ok) { setError(`HTTP ${resp.status}`); return; }
 			const data = await resp.json() as { jobs: JobRow[] };
 			setJobs(data.jobs ?? []);
@@ -296,7 +298,7 @@ export function JobsTab({ token }: { token: string }) {
 			setLoading(false);
 			setInitialLoad(false);
 		}
-	}, [token, hours, debouncedFilter]);
+	}, [hours, debouncedFilter]);
 
 	// Polling with visibility-aware pause
 	useEffect(() => {
