@@ -73,6 +73,8 @@ async function enqueueOrFireAndForget(
 		origin: string;
 		sourceType: string;
 		etag?: string;
+		sourceLastModified?: string;
+		sourcePath?: string;
 		version?: number;
 	},
 	rlog: { info: (msg: string, data?: Record<string, unknown>) => void; warn: (msg: string, data?: Record<string, unknown>) => void; error: (msg: string, data?: Record<string, unknown>) => void },
@@ -92,6 +94,8 @@ async function enqueueOrFireAndForget(
 		origin: job.origin,
 		sourceType: job.sourceType,
 		etag: job.etag,
+		sourceLastModified: job.sourceLastModified,
+		sourcePath: job.sourcePath,
 		version: job.version,
 		createdAt: Date.now(),
 	};
@@ -126,10 +130,13 @@ async function enqueueOrFireAndForget(
 	if (c.env.FFMPEG_CONTAINER) {
 		const instanceKey = buildContainerInstanceKey(job.origin, job.path, job.params);
 		const zoneHost = new URL(job.requestUrl).host;
-		const callbackUrl = toCallbackUrl(
-			zoneHost,
-			`/internal/container-result?path=${encodeURIComponent(job.path)}&cacheKey=${encodeURIComponent(job.callbackCacheKey)}&requestUrl=${encodeURIComponent(job.requestUrl)}&jobId=${encodeURIComponent(job.jobId)}`,
-		);
+		let cbQuery = `/internal/container-result?path=${encodeURIComponent(job.path)}&cacheKey=${encodeURIComponent(job.callbackCacheKey)}&requestUrl=${encodeURIComponent(job.requestUrl)}&jobId=${encodeURIComponent(job.jobId)}`;
+		if (job.etag) cbQuery += `&srcEtag=${encodeURIComponent(job.etag)}`;
+		if (job.sourceLastModified) cbQuery += `&srcLM=${encodeURIComponent(job.sourceLastModified)}`;
+		if (job.sourcePath) cbQuery += `&srcPath=${encodeURIComponent(job.sourcePath)}`;
+		if (job.sourceType) cbQuery += `&srcType=${encodeURIComponent(job.sourceType)}`;
+		if (job.version && job.version > 1) cbQuery += `&cacheVer=${job.version}`;
+		const callbackUrl = toCallbackUrl(zoneHost, cbQuery);
 		c.executionCtx.waitUntil(
 			transformViaContainerUrl(c.env.FFMPEG_CONTAINER, job.sourceUrl, job.params, instanceKey, callbackUrl)
 				.then((r: Response) => rlog.info('Async container accepted', { status: r.status }))
@@ -255,11 +262,16 @@ export async function transformHandler(c: HonoContext) {
 	}
 
 	// 3. Compute cache key ONCE — single source of truth for all lookups.
-	//    Version is fetched from KV before any cache/R2 checks so edge cache,
-	//    R2, coalescer, and container jobs all use the identical key.
-	const cacheVersion = await getVersion(c.env.CACHE_VERSIONS, path);
-	const cacheKey = buildCacheKey(path, params, cacheVersion);
+	//    Version is NO LONGER part of the cache key. Freshness is validated
+	//    via source etag/last-modified metadata on R2 HIT. KV version is
+	//    only checked as an optional manual force-bust override.
+	const cacheKey = buildCacheKey(path, params);
 	const r2TransformKey = `_transformed/${cacheKey}`;
+
+	// Optional: check if admin has a force-bust version in KV.
+	// Only fetched once, only used if version > 1 (default is 1 = no bust).
+	const forceVersion = await getVersion(c.env.CACHE_VERSIONS, path);
+	const forceBust = forceVersion > 1;
 
 	const cacheReq = new Request(requestUrl, c.req.raw);
 	const cache = caches.default;
@@ -314,8 +326,8 @@ export async function transformHandler(c: HonoContext) {
 
 	// 3b. Check R2 persistent storage for previously transformed results.
 	//     ALL transform results (binding, cdn-cgi, container) are stored in R2
-	//     for durable global availability. On hit: stream from R2, promote into
-	//     edge cache (for future same-colo hits) + serve to client.
+	//     for durable global availability. On hit: validate source freshness,
+	//     then stream from R2, promote into edge cache + serve to client.
 	//
 	//     NOTE: This runs even with ?debug. Debug skips edge cache reads/writes
 	//     but still serves from R2 — intentional, so container job results are
@@ -323,74 +335,137 @@ export async function transformHandler(c: HonoContext) {
 	const r2Result = await c.env.VIDEOS.get(r2TransformKey);
 	if (r2Result) {
 		rlog.info('R2 storage HIT', { r2Key: r2TransformKey, size: r2Result.size });
-		// Update D1 job status to complete (if it was tracked as a queue job).
-		if (c.env.ANALYTICS) {
-			c.executionCtx.waitUntil(
-				c.env.ANALYTICS.prepare('UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = ? WHERE job_id = ? AND status NOT IN (?, ?)')
-					.bind('complete', Date.now(), r2Result.size, cacheKey, 'complete', 'failed')
-					.run().catch(() => {}),
-			);
+
+		// ── Source freshness validation ──────────────────────────────
+		// Compare stored source metadata against current source to detect
+		// stale transforms. If stale, cancel the R2 body and fall through
+		// to the transform path (result overwrites same R2 key — no orphans).
+		const storedEtag = r2Result.customMetadata?.sourceEtag;
+		const storedSourceType = r2Result.customMetadata?.sourceType;
+		const storedSourcePath = r2Result.customMetadata?.sourcePath;
+		let isStale = false;
+
+		// Force bust via KV version override (admin-triggered)
+		if (forceBust) {
+			const storedVersion = r2Result.customMetadata?.cacheVersion;
+			if (storedVersion !== String(forceVersion)) {
+				isStale = true;
+				rlog.info('Force bust: KV version mismatch', { storedVersion, forceVersion });
+			}
 		}
-		const ct = r2Result.httpMetadata?.contentType ?? 'video/mp4';
-		const transformSource = r2Result.customMetadata?.transformSource ?? 'unknown';
-		const storedSourceType = r2Result.customMetadata?.sourceType ?? 'unknown';
 
-		let maxAge = 86400;
-		const ttl = originMatch.origin.ttl;
-		if (ttl) maxAge = ttl.ok;
-
-		const headers = new Headers();
-		headers.set('Content-Type', ct);
-		headers.set('Content-Length', String(r2Result.size));
-		headers.set('Cache-Control', `public, max-age=${maxAge}`);
-		headers.set('Accept-Ranges', 'bytes');
-		headers.set('Via', 'video-resizer');
-		headers.set('X-Request-ID', requestId);
-		headers.set('X-Transform-Source', transformSource);
-		headers.set('X-Source-Type', storedSourceType);
-		headers.set('X-Origin', originMatch.origin.name);
-		headers.set('X-Cache-Key', cacheKey);
-		headers.set('X-R2-Stored', 'true');
-		if (params.derivative) headers.set('X-Derivative', params.derivative);
-		if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
-		if (params.width) headers.set('X-Resolved-Width', String(params.width));
-		if (params.height) headers.set('X-Resolved-Height', String(params.height));
-
-		// Playback hint headers
-		if (params.loop !== undefined) headers.set('X-Playback-Loop', String(params.loop));
-		if (params.autoplay !== undefined) headers.set('X-Playback-Autoplay', String(params.autoplay));
-		if (params.muted !== undefined) headers.set('X-Playback-Muted', String(params.muted));
-		if (params.preload) headers.set('X-Playback-Preload', params.preload);
-
-		// Cache-Tag for purge-by-tag
-		const tags: string[] = [];
-		if (params.derivative) tags.push(`derivative:${params.derivative}`);
-		tags.push(`origin:${originMatch.origin.name}`);
-		if (params.mode && params.mode !== 'video') tags.push(`mode:${params.mode}`);
-		if (originMatch.origin.cacheTags) tags.push(...originMatch.origin.cacheTags);
-		if (tags.length) headers.set('Cache-Tag', tags.join(','));
-
-		// Store R2 result in edge cache, then serve via cache.match for
-		// native range request handling (206 + Content-Range).
-		// Use the non-debug URL so non-debug requests benefit from edge cache.
-		const edgeCacheUrl = requestUrl.replace(/[&?]debug(&|$)/, '$1').replace(/[?&]$/, '');
-		const edgeCacheReq = new Request(edgeCacheUrl, { method: 'GET' });
-		await cache.put(edgeCacheReq, new Response(r2Result.body, { status: 200, headers: new Headers(headers) }));
-		rlog.info('R2 result cached in colo', { path });
-
-		// Serve via cache.match — handles Range headers natively
-		const cachedFromR2 = await cache.match(new Request(edgeCacheUrl, c.req.raw));
-		if (cachedFromR2) return cachedFromR2;
-
-		// Fallback — cache.put may not be immediately visible to cache.match.
-		// Re-read from R2 to serve the client (body was consumed by cache.put above).
-		rlog.warn('cache.match miss after R2 promotion, re-reading from R2', { path });
-		const r2Fallback = await c.env.VIDEOS.get(r2TransformKey);
-		if (r2Fallback) {
-			headers.set('Content-Length', String(r2Fallback.size));
-			return new Response(r2Fallback.body, { status: 200, headers });
+		// Etag/Last-Modified revalidation against current source
+		if (!isStale && storedEtag && storedSourcePath) {
+			if (storedSourceType === 'r2') {
+				// R2 source → head() the source object, compare etag
+				const sourceHead = await c.env.VIDEOS.head(storedSourcePath);
+				if (sourceHead && sourceHead.etag !== storedEtag) {
+					isStale = true;
+					rlog.info('R2 source changed', { storedEtag, currentEtag: sourceHead.etag });
+				}
+				// sourceHead === null means source deleted — serve stale (better than error)
+			} else if (storedSourceType === 'remote' || storedSourceType === 'fallback') {
+				// Remote source → HEAD the origin URL with 3s timeout
+				// If origin is slow/unreachable, serve stale (better than error)
+				try {
+					const headResp = await Promise.race([
+						fetch(storedSourcePath, { method: 'HEAD' }),
+						new Promise<null>((r) => setTimeout(() => r(null), 3000)),
+					]);
+					if (headResp) {
+						const currentEtag = headResp.headers.get('ETag');
+						const currentLastMod = headResp.headers.get('Last-Modified');
+						const storedLastMod = r2Result.customMetadata?.sourceLastModified;
+						if (currentEtag && storedEtag && currentEtag !== storedEtag) {
+							isStale = true;
+							rlog.info('Remote source ETag changed', { storedEtag, currentEtag });
+						} else if (!currentEtag && currentLastMod && storedLastMod && currentLastMod !== storedLastMod) {
+							isStale = true;
+							rlog.info('Remote source Last-Modified changed', { storedLastMod, currentLastMod });
+						}
+					}
+					// null = timeout, serve stale
+				} catch {
+					// Network error — serve stale (better than error)
+				}
+			}
 		}
-		return new Response('Transform result unavailable', { status: 502 });
+
+		if (isStale) {
+			rlog.info('R2 result stale, re-transforming', { r2Key: r2TransformKey });
+			// Cancel the R2 body we won't use, then fall through to transform path
+			r2Result.body.cancel().catch(() => {});
+		} else {
+			// ── Serve cached result ─────────────────────────────────────
+			// Update D1 job status to complete (if it was tracked as a queue job).
+			if (c.env.ANALYTICS) {
+				c.executionCtx.waitUntil(
+					c.env.ANALYTICS.prepare('UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = ? WHERE job_id = ? AND status NOT IN (?, ?)')
+						.bind('complete', Date.now(), r2Result.size, cacheKey, 'complete', 'failed')
+						.run().catch(() => {}),
+				);
+			}
+			const ct = r2Result.httpMetadata?.contentType ?? 'video/mp4';
+			const transformSource = r2Result.customMetadata?.transformSource ?? 'unknown';
+			const displaySourceType = storedSourceType ?? 'unknown';
+
+			let maxAge = 86400;
+			const ttl = originMatch.origin.ttl;
+			if (ttl) maxAge = ttl.ok;
+
+			const headers = new Headers();
+			headers.set('Content-Type', ct);
+			headers.set('Content-Length', String(r2Result.size));
+			headers.set('Cache-Control', `public, max-age=${maxAge}`);
+			headers.set('Accept-Ranges', 'bytes');
+			headers.set('Via', 'video-resizer');
+			headers.set('X-Request-ID', requestId);
+			headers.set('X-Transform-Source', transformSource);
+			headers.set('X-Source-Type', displaySourceType);
+			headers.set('X-Origin', originMatch.origin.name);
+			headers.set('X-Cache-Key', cacheKey);
+			headers.set('X-R2-Stored', 'true');
+			if (params.derivative) headers.set('X-Derivative', params.derivative);
+			if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
+			if (params.width) headers.set('X-Resolved-Width', String(params.width));
+			if (params.height) headers.set('X-Resolved-Height', String(params.height));
+
+			// Playback hint headers
+			if (params.loop !== undefined) headers.set('X-Playback-Loop', String(params.loop));
+			if (params.autoplay !== undefined) headers.set('X-Playback-Autoplay', String(params.autoplay));
+			if (params.muted !== undefined) headers.set('X-Playback-Muted', String(params.muted));
+			if (params.preload) headers.set('X-Playback-Preload', params.preload);
+
+			// Cache-Tag for purge-by-tag
+			const tags: string[] = [];
+			if (params.derivative) tags.push(`derivative:${params.derivative}`);
+			tags.push(`origin:${originMatch.origin.name}`);
+			if (params.mode && params.mode !== 'video') tags.push(`mode:${params.mode}`);
+			if (originMatch.origin.cacheTags) tags.push(...originMatch.origin.cacheTags);
+			if (tags.length) headers.set('Cache-Tag', tags.join(','));
+
+			// Store R2 result in edge cache, then serve via cache.match for
+			// native range request handling (206 + Content-Range).
+			// Use the non-debug URL so non-debug requests benefit from edge cache.
+			const edgeCacheUrl = requestUrl.replace(/[&?]debug(&|$)/, '$1').replace(/[?&]$/, '');
+			const edgeCacheReq = new Request(edgeCacheUrl, { method: 'GET' });
+			await cache.put(edgeCacheReq, new Response(r2Result.body, { status: 200, headers: new Headers(headers) }));
+			rlog.info('R2 result cached in colo', { path });
+
+			// Serve via cache.match — handles Range headers natively
+			const cachedFromR2 = await cache.match(new Request(edgeCacheUrl, c.req.raw));
+			if (cachedFromR2) return cachedFromR2;
+
+			// Fallback — cache.put may not be immediately visible to cache.match.
+			// Re-read from R2 to serve the client (body was consumed by cache.put above).
+			rlog.warn('cache.match miss after R2 promotion, re-reading from R2', { path });
+			const r2Fallback = await c.env.VIDEOS.get(r2TransformKey);
+			if (r2Fallback) {
+				headers.set('Content-Length', String(r2Fallback.size));
+				return new Response(r2Fallback.body, { status: 200, headers });
+			}
+			return new Response('Transform result unavailable', { status: 502 });
+		}
 	}
 
 	// 4. Request coalescing — join in-flight transform if one exists
@@ -440,6 +515,8 @@ export async function transformHandler(c: HonoContext) {
 		const errors: string[] = [];
 		let transformed: Response | null = null;
 		let etag: string | undefined;
+		let sourceLastModified: string | undefined;
+		let sourcePath: string | undefined;
 		let version: number | undefined;
 		let sourceType: string = 'unknown';
 		let transformSource: string = 'unknown';
@@ -458,6 +535,7 @@ export async function transformHandler(c: HonoContext) {
 						const object = await bucket.get(resolved);
 						if (!object) continue;
 						etag = object.etag;
+						sourcePath = resolved;
 						sourceType = 'r2';
 
 						// Size-based routing: very large files use async queue path
@@ -481,6 +559,7 @@ export async function transformHandler(c: HonoContext) {
 								origin: originMatch.origin.name,
 								sourceType,
 								etag,
+								sourcePath: resolved,
 								version,
 							}, rlog);
 							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
@@ -504,6 +583,11 @@ export async function transformHandler(c: HonoContext) {
 						const headResp = await fetch(remoteUrl, { method: 'HEAD' }).catch(() => null);
 						const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
 						sourceType = source.type;
+						sourcePath = remoteUrl;
+						if (headResp) {
+							etag = headResp.headers.get('ETag') ?? undefined;
+							sourceLastModified = headResp.headers.get('Last-Modified') ?? undefined;
+						}
 
 						if (contentLength > 256 * 1024 * 1024) {
 							rlog.info('Container-only + oversized remote, enqueuing async container', {
@@ -519,6 +603,8 @@ export async function transformHandler(c: HonoContext) {
 								origin: originMatch.origin.name,
 								sourceType,
 								etag,
+								sourceLastModified,
+								sourcePath: remoteUrl,
 								version,
 							}, rlog);
 							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
@@ -567,6 +653,7 @@ export async function transformHandler(c: HonoContext) {
 
 					const BINDING_SIZE_LIMIT = config.bindingSizeLimit;
 					etag = object.etag;
+					sourcePath = resolved;
 					sourceType = 'r2';
 					rlog.info('Source fetched (R2)', { path: resolved, size: object.size, etag });
 
@@ -597,6 +684,7 @@ export async function transformHandler(c: HonoContext) {
 								origin: originMatch.origin.name,
 								sourceType,
 								etag,
+								sourcePath: resolved,
 								version,
 							}, rlog);
 							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
@@ -637,7 +725,8 @@ export async function transformHandler(c: HonoContext) {
 									const result = await enqueueOrFireAndForget(c, {
 										jobId: cacheKey, path, params, sourceUrl: fetchableUrl,
 										callbackCacheKey: cacheKey, requestUrl,
-										origin: originMatch.origin.name, sourceType, etag, version,
+										origin: originMatch.origin.name, sourceType, etag,
+										sourcePath: resolved, version,
 									}, rlog);
 									const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 									return {
@@ -673,7 +762,7 @@ export async function transformHandler(c: HonoContext) {
 					break;
 				} else {
 					// Remote/fallback — check size via HEAD to decide routing
-					version = cacheVersion;
+					version = forceBust ? forceVersion : undefined;
 					sourceType = source.type;
 
 					let sourceUrl = resolved;
@@ -690,6 +779,13 @@ export async function transformHandler(c: HonoContext) {
 					const CDN_CGI_SIZE_LIMIT = config.cdnCgiSizeLimit;
 					const headResp = await fetch(sourceUrl, { method: 'HEAD' }).catch(() => null);
 					const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
+
+					// Capture source freshness metadata for revalidation
+					sourcePath = sourceUrl;
+					if (headResp) {
+						etag = headResp.headers.get('ETag') ?? undefined;
+						sourceLastModified = headResp.headers.get('Last-Modified') ?? undefined;
+					}
 
 					if (contentLength > CDN_CGI_SIZE_LIMIT && (c.env.FFMPEG_CONTAINER || c.env.TRANSFORM_QUEUE)) {
 						// Use remote URL for container fetch — container downloads directly
@@ -708,6 +804,9 @@ export async function transformHandler(c: HonoContext) {
 							requestUrl,
 							origin: originMatch.origin.name,
 							sourceType,
+							etag,
+							sourceLastModified,
+							sourcePath: sourceUrl,
 							version,
 						}, rlog);
 						const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
@@ -751,6 +850,9 @@ export async function transformHandler(c: HonoContext) {
 								requestUrl,
 								origin: originMatch.origin.name,
 								sourceType,
+								etag,
+								sourceLastModified,
+								sourcePath: sourceUrl,
 								version,
 							}, rlog);
 							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
@@ -838,11 +940,11 @@ export async function transformHandler(c: HonoContext) {
 			});
 		}
 
-		return { transformed, etag, sourceType, transformSource };
+		return { transformed, etag, sourceLastModified, sourcePath, sourceType, transformSource, version };
 	})();
 
 	// Register for coalescing, clean up when done
-	const responsePromise = transformPromise.then(async ({ transformed, etag, sourceType, transformSource: rawTransformSource }) => {
+	const responsePromise = transformPromise.then(async ({ transformed, etag, sourceLastModified: srcLastMod, sourcePath: srcPath, sourceType, transformSource: rawTransformSource, version: srcVersion }) => {
 		const transformSource = rawTransformSource ?? 'unknown';
 		const durationMs = Math.round(performance.now() - startTime);
 
@@ -941,6 +1043,18 @@ export async function transformHandler(c: HonoContext) {
 			const ct = headers.get('Content-Type') ?? 'video/mp4';
 			const contentLength = transformed.headers.get('Content-Length');
 
+			// Build source freshness metadata for revalidation on future R2 HITs.
+			// Only defined fields are stored (R2 customMetadata values must be strings).
+			const r2Meta: Record<string, string> = {
+				transformSource,
+				sourceType,
+				cacheKey,
+			};
+			if (etag) r2Meta.sourceEtag = etag;
+			if (srcLastMod) r2Meta.sourceLastModified = srcLastMod;
+			if (srcPath) r2Meta.sourcePath = srcPath;
+			if (forceBust) r2Meta.cacheVersion = String(forceVersion);
+
 			// 1. Stream transform output directly to R2
 			if (contentLength) {
 				const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));
@@ -951,11 +1065,7 @@ export async function transformHandler(c: HonoContext) {
 				});
 				await c.env.VIDEOS.put(r2StoreKey, fixedStream.readable, {
 					httpMetadata: { contentType: ct },
-					customMetadata: {
-						transformSource,
-						sourceType,
-						cacheKey,
-					},
+					customMetadata: r2Meta,
 				});
 			} else {
 				// No Content-Length — stream directly to R2. R2 accepts ReadableStream
@@ -964,11 +1074,7 @@ export async function transformHandler(c: HonoContext) {
 				rlog.warn('No Content-Length, streaming directly to R2', { path });
 				await c.env.VIDEOS.put(r2StoreKey, transformed.body, {
 					httpMetadata: { contentType: ct },
-					customMetadata: {
-						transformSource,
-						sourceType,
-						cacheKey,
-					},
+					customMetadata: r2Meta,
 				});
 			}
 			rlog.info('R2 transform stored', { path, r2Key: r2StoreKey, size: contentLength });

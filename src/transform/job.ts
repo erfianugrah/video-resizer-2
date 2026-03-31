@@ -22,6 +22,8 @@ export interface JobMessage {
 	origin: string;
 	sourceType: string;
 	etag?: string;
+	sourceLastModified?: string;
+	sourcePath?: string;
 	version?: number;
 	createdAt: number;
 }

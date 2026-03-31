@@ -61,10 +61,14 @@ describe('cache/key', () => {
 		expect(buildCacheKey('/test.mp4', withDerivative)).toBe(buildCacheKey('/test.mp4', withoutDerivative));
 	});
 
-	it('appends version when provided', () => {
+	it('does not include version in cache key (freshness validated via source metadata)', () => {
 		const params: TransformParams = { width: 640 };
-		const key = buildCacheKey('/test.mp4', params, 3);
-		expect(key).toBe('video:test.mp4:w=640:v=3');
+		// buildCacheKey no longer accepts a version parameter — cache keys are
+		// version-free. Source freshness is validated via etag/last-modified
+		// metadata stored on the R2 transform result.
+		const key = buildCacheKey('/test.mp4', params);
+		expect(key).toBe('video:test.mp4:w=640');
+		expect(key).not.toContain(':v=');
 	});
 
 	it('sanitizes spaces and special chars in path', () => {

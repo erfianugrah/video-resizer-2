@@ -9,24 +9,31 @@
  * resolved dimensions matter: ?derivative=tablet (→ 1280x720) and
  * ?width=1280&height=720 produce identical keys.
  *
+ * Version is NOT part of the cache key. Freshness is validated by comparing
+ * source etag/last-modified metadata stored on the R2 transform result against
+ * the current source. This eliminates orphan R2 objects on version bumps and
+ * provides automatic revalidation when R2 or remote sources change.
+ *
+ * KV CACHE_VERSIONS still exists as a manual force-bust override — if a
+ * version > 1 exists, it's stored in R2 customMetadata and compared on HIT.
+ *
  * This function is pure — no config lookups, no side effects.
  *
  * IMPORTANT: This is the single source of truth for cache keys. Compute the
- * key ONCE per request (after params resolve + version fetch) and reuse it
- * everywhere — edge cache, R2 lookup, coalescer, container jobs, response.
+ * key ONCE per request (after params resolve) and reuse it everywhere — edge
+ * cache, R2 lookup, coalescer, container jobs, response.
  */
 import type { TransformParams } from '../params/schema';
 
 /**
  * Build a deterministic cache key from path and resolved transform params.
  *
- * Format: `{mode}:{path}[:w={width}][:h={height}][:...params][:v={version}]`
+ * Format: `{mode}:{path}[:w={width}][:h={height}][:...params]`
  *
  * @param path Request path
  * @param params Resolved transform params (derivative already applied)
- * @param version KV-backed version number for manual cache busting
  */
-export function buildCacheKey(path: string, params: TransformParams, version?: number): string {
+export function buildCacheKey(path: string, params: TransformParams): string {
 	const normalizedPath = path.replace(/^\/+/, '');
 	const mode = params.mode ?? 'video';
 
@@ -71,9 +78,6 @@ export function buildCacheKey(path: string, params: TransformParams, version?: n
 	if (params.rotate != null) key += `:rot=${params.rotate}`;
 	if (params.crop) key += `:crop=${params.crop}`;
 	if (params.bitrate) key += `:br=${params.bitrate}`;
-
-	// KV version for manual cache busting
-	if (version && version > 1) key += `:v=${version}`;
 
 	// Sanitize: replace spaces and invalid chars, preserve slashes and structure
 	return key.replace(/[^\w:/=.*-]/g, '-');

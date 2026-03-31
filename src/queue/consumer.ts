@@ -76,10 +76,16 @@ export async function handleQueue(
 			const params = job.params as Record<string, unknown>;
 			const instanceKey = buildContainerInstanceKey(job.origin, job.path, params as any);
 			const zoneHost = new URL(job.requestUrl).host;
-			const callbackUrl = toCallbackUrl(
-				zoneHost,
-				`/internal/container-result?path=${encodeURIComponent(job.path)}&cacheKey=${encodeURIComponent(job.callbackCacheKey)}&requestUrl=${encodeURIComponent(job.requestUrl)}&jobId=${encodeURIComponent(job.jobId)}`,
-			);
+		// Build callback URL with source freshness metadata for R2 storage.
+			// Keep param names compact (srcEtag, srcLM, srcPath, srcType, cacheVer)
+			// to stay within URL length limits.
+			let cbQuery = `/internal/container-result?path=${encodeURIComponent(job.path)}&cacheKey=${encodeURIComponent(job.callbackCacheKey)}&requestUrl=${encodeURIComponent(job.requestUrl)}&jobId=${encodeURIComponent(job.jobId)}`;
+			if (job.etag) cbQuery += `&srcEtag=${encodeURIComponent(job.etag)}`;
+			if (job.sourceLastModified) cbQuery += `&srcLM=${encodeURIComponent(job.sourceLastModified)}`;
+			if (job.sourcePath) cbQuery += `&srcPath=${encodeURIComponent(job.sourcePath)}`;
+			if (job.sourceType) cbQuery += `&srcType=${encodeURIComponent(job.sourceType)}`;
+			if (job.version && job.version > 1) cbQuery += `&cacheVer=${job.version}`;
+			const callbackUrl = toCallbackUrl(zoneHost, cbQuery);
 
 			const container = env.FFMPEG_CONTAINER.get(
 				env.FFMPEG_CONTAINER.idFromName(instanceKey),

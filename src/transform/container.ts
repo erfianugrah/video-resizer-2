@@ -119,6 +119,12 @@ export class FFmpegContainer extends Container {
 		const cacheKey = url.searchParams.get('cacheKey');
 		const requestUrl = url.searchParams.get('requestUrl');
 		const jobId = url.searchParams.get('jobId');
+		// Source freshness metadata — passed via callback query params
+		const srcEtag = url.searchParams.get('srcEtag');
+		const srcLM = url.searchParams.get('srcLM');
+		const srcPath = url.searchParams.get('srcPath');
+		const srcType = url.searchParams.get('srcType');
+		const cacheVer = url.searchParams.get('cacheVer');
 
 		if (!path || !cacheKey) {
 			log.error('Container callback missing params', { path, cacheKey });
@@ -165,9 +171,21 @@ export class FFmpegContainer extends Container {
 		const r2 = (env as Record<string, unknown>).VIDEOS as R2Bucket | undefined;
 		const r2Key = `_transformed/${cacheKey}`;
 		if (r2) {
+			// Build custom metadata with source freshness info for revalidation
+			const meta: Record<string, string> = {
+				transformSource: 'container',
+				sourceType: srcType ?? 'container',
+				cacheUrl,
+				cacheKey,
+			};
+			if (srcEtag) meta.sourceEtag = srcEtag;
+			if (srcLM) meta.sourceLastModified = srcLM;
+			if (srcPath) meta.sourcePath = srcPath;
+			if (cacheVer) meta.cacheVersion = cacheVer;
+
 			const r2Metadata = {
 				httpMetadata: { contentType },
-				customMetadata: { transformSource: 'container', sourceType: 'container', cacheUrl, cacheKey },
+				customMetadata: meta,
 			};
 			if (contentLength) {
 				const fixedStream = new FixedLengthStream(parseInt(contentLength, 10));

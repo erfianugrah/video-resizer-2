@@ -1,13 +1,16 @@
 /**
- * KV-backed cache version registry.
+ * KV-backed cache version registry — manual force-bust override.
  *
- * Each source path has a version number. Bumping the version changes the
- * cache key, forcing a re-transform on the next request. This is needed
- * because remote origins are opaque — we can't know when they change.
+ * Source freshness is now validated automatically via etag/last-modified
+ * metadata stored on R2 transform results. This module provides a manual
+ * force-bust mechanism for cases where automatic revalidation isn't enough
+ * (e.g. CDN cache purge, emergency invalidation).
  *
- * For R2 sources, conditional requests (ETag/If-None-Match) could
- * validate freshness cheaply, but the version approach is simpler and
- * works uniformly across all source types.
+ * When version > 1, the version is stored in R2 customMetadata on the
+ * transform result. On R2 HIT, if the stored version doesn't match the
+ * current KV version, the result is treated as stale and re-transformed.
+ *
+ * Version is NOT part of the cache key — the key is purely path + params.
  *
  * KV key: `v:{path}` → version number (integer string)
  */
