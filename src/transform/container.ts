@@ -211,15 +211,15 @@ export class FFmpegContainer extends Container {
 		// the job is done. The DO's jobInFlight flag resets on next onStop
 		// or when the sleepAfter timer fires.)
 
-	// D1 complete — awaited inline so the write commits before we return.
-	// completeJob retries once internally on transient D1 errors.
-	// Previously this was fire-and-forget via waitUntil, which caused
-	// jobs to appear stuck at 'uploading' when the D1 write was lost.
-	if (jobId && analyticsDb) {
-		await completeJob(analyticsDb, jobId, contentLength ? parseInt(contentLength, 10) : undefined);
-	}
+		// D1 complete — awaited inline so the write commits before we return.
+		// completeJob retries once internally on transient D1 errors.
+		// Previously this was fire-and-forget via waitUntil, which caused
+		// jobs to appear stuck at 'uploading' when the D1 write was lost.
+		if (jobId && analyticsDb) {
+			await completeJob(analyticsDb, jobId, contentLength ? parseInt(contentLength, 10) : undefined);
+		}
 
-	log.info('Container result stored in R2', {
+		log.info('Container result stored in R2', {
 			cacheKey, path, r2Key, contentType,
 			contentLength: contentLength ?? 'unknown',
 		});

@@ -599,9 +599,11 @@ test('container: R2 cached result has x-transform-source=container', async () =>
 		// New R2 entries have 'container', old ones may have 'unknown'
 		assertOneOf(h(r, 'x-transform-source'), ['container', 'unknown'], 'x-transform-source');
 	}
-	// If 202, container is processing — not an error
+	// If 202, container is processing — not an error.
+	// Body status is 'queued' (queue path) or 'processing' (fire-and-forget path).
 	if (r.status === 202) {
-		assertContains(await r.text(), 'processing', '202 body');
+		const body = await r.text();
+		assertContains(body, 'jobId', '202 body has jobId');
 	}
 });
 

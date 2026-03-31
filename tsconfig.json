@@ -15,5 +15,5 @@
 		"jsxImportSource": "hono/jsx"
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts"],
-	"exclude": ["node_modules", "dashboard", "test/e2e-browser"]
+	"exclude": ["node_modules", "dashboard", "test/e2e-browser", "test/e2e"]
 }

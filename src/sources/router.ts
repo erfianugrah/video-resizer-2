@@ -15,14 +15,32 @@ export interface OriginMatch {
 }
 
 /**
+ * Detect regexes likely to cause catastrophic backtracking.
+ * Looks for nested quantifiers like (a+)+, (a*)*,  (a+)*, etc.
+ * This is a heuristic — it won't catch all ReDoS patterns, but it
+ * catches the most common class of evil regexes from user config.
+ */
+function isPotentiallyDangerous(pattern: string): boolean {
+	// Nested quantifiers: a group with a quantifier inside, followed by a quantifier outside
+	// e.g. (a+)+, (.*)*,  ([^/]+)+  — the [^...]+ inside a group with + outside
+	return /(\([^)]*[+*][^)]*\))[+*{]/.test(pattern);
+}
+
+/**
  * Match a request path against configured origins.
  *
  * First matching origin wins. Returns null if no origin matches.
  * Captures are extracted from the regex and mapped to captureGroup names.
+ *
+ * Rejects regex patterns with nested quantifiers to prevent ReDoS.
  */
 export function matchOrigin(path: string, origins: Origin[]): OriginMatch | null {
 	for (const origin of origins) {
 		try {
+			if (isPotentiallyDangerous(origin.matcher)) {
+				// Skip dangerous patterns — log is imported at top of file
+				continue;
+			}
 			const regex = new RegExp(origin.matcher);
 			const match = regex.exec(path);
 			if (!match) continue;
