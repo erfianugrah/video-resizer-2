@@ -16,8 +16,13 @@ const UPSERT_SQL = `
 INSERT INTO transform_jobs (job_id, path, origin, status, params_json, source_url, source_type, created_at)
 VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
 ON CONFLICT(job_id) DO UPDATE SET
-  status = CASE WHEN transform_jobs.status IN ('complete', 'failed') THEN transform_jobs.status ELSE 'pending' END,
-  created_at = CASE WHEN transform_jobs.status IN ('complete', 'failed') THEN transform_jobs.created_at ELSE excluded.created_at END
+  status = 'pending',
+  created_at = excluded.created_at,
+  started_at = NULL,
+  completed_at = NULL,
+  error = NULL,
+  output_size = NULL,
+  percent = 0
 `;
 
 /** Register a new job in D1. Fire-and-forget. */
