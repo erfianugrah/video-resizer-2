@@ -258,7 +258,10 @@ export async function transformHandler(c: HonoContext) {
 			rawImHeight,
 			warnings,
 		};
-		return c.json({ diagnostics, _meta: { ts: Date.now() } }, 200, { 'Cache-Control': 'no-store' });
+		return c.json({ diagnostics, _meta: { ts: Date.now() } }, 200, {
+			'Cache-Control': 'no-store',
+			'CDN-Cache-Control': 'no-store',
+		});
 	}
 
 	// 3. Compute cache key ONCE — single source of truth for all lookups.
@@ -417,6 +420,7 @@ export async function transformHandler(c: HonoContext) {
 			headers.set('Content-Type', ct);
 			headers.set('Content-Length', String(r2Result.size));
 			headers.set('Cache-Control', r2CacheControl);
+			if (skipCache) headers.set('CDN-Cache-Control', 'no-store');
 			headers.set('Accept-Ranges', 'bytes');
 			headers.set('Via', 'video-resizer');
 			headers.set('X-Request-ID', requestId);
@@ -965,6 +969,7 @@ export async function transformHandler(c: HonoContext) {
 
 		const headers = new Headers(transformed.headers);
 		headers.set('Cache-Control', cacheControlHeader);
+		if (skipCache) headers.set('CDN-Cache-Control', 'no-store');
 		headers.set('Accept-Ranges', 'bytes');
 		headers.set('X-Request-ID', requestId);
 		headers.set('Via', 'video-resizer');
