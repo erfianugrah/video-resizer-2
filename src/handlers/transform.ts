@@ -157,7 +157,7 @@ async function enqueueOrFireAndForget(
 export async function transformHandler(c: HonoContext) {
 	const config = c.get('config');
 	const url = new URL(c.req.url);
-	const path = url.pathname;
+	const path = url.pathname.replace(/\/+$/, '') || '/';
 	const requestUrl = c.req.url;
 	const startTime = c.get('startTime') ?? performance.now();
 	const skipCache = url.searchParams.has('debug');
