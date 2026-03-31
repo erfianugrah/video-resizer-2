@@ -267,51 +267,62 @@ export async function transformHandler(c: HonoContext) {
 	if (!skipCache) {
 		const cached = await cache.match(cacheReq);
 		if (cached) {
-			rlog.info('Cache HIT', { path });
-			const resp = new Response(cached.body, cached);
-			resp.headers.set('X-Request-ID', requestId);
+			// Validate the cached response matches the current cache key.
+			// After a version bump, edge cache may still hold stale results
+			// from the old version. Compare X-Cache-Key to detect this.
+			const cachedKey = cached.headers.get('X-Cache-Key');
+			if (cachedKey && cachedKey !== cacheKey) {
+				rlog.info('Edge cache stale (version mismatch)', { path, cachedKey, currentKey: cacheKey });
+				// Fall through to R2 / transform — stale edge entry will be
+				// overwritten by cache.put when the fresh result is stored.
+			} else {
+				rlog.info('Edge cache HIT', { path });
+				const resp = new Response(cached.body, cached);
+				resp.headers.set('X-Request-ID', requestId);
 
-			// Log cache hit to analytics + mark job complete in D1
-			if (c.env.ANALYTICS) {
-				const bytes = parseInt(cached.headers.get('Content-Length') ?? '0', 10) || null;
-				logAnalyticsEvent(c.env.ANALYTICS, {
-					path,
-					origin: originMatch.origin.name,
-					status: cached.status,
-					mode: params.mode ?? null,
-					derivative: params.derivative ?? null,
-					durationMs: Math.round(performance.now() - startTime),
-					cacheHit: true,
-					transformSource: null,
-					sourceType: null,
-					errorCode: null,
-					bytes,
-				}, c.executionCtx.waitUntil.bind(c.executionCtx));
+				// Log cache hit to analytics + mark job complete in D1
+				if (c.env.ANALYTICS) {
+					const bytes = parseInt(cached.headers.get('Content-Length') ?? '0', 10) || null;
+					logAnalyticsEvent(c.env.ANALYTICS, {
+						path,
+						origin: originMatch.origin.name,
+						status: cached.status,
+						mode: params.mode ?? null,
+						derivative: params.derivative ?? null,
+						durationMs: Math.round(performance.now() - startTime),
+						cacheHit: true,
+						transformSource: null,
+						sourceType: null,
+						errorCode: null,
+						bytes,
+					}, c.executionCtx.waitUntil.bind(c.executionCtx));
 
-				// Mark any matching job as complete (idempotent — skips already-complete jobs).
-				c.executionCtx.waitUntil(
-					c.env.ANALYTICS.prepare(
-						'UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = COALESCE(output_size, ?) WHERE job_id = ? AND status NOT IN (?, ?)',
-					).bind('complete', Date.now(), bytes, cacheKey, 'complete', 'failed').run().catch(() => {}),
-				);
+					// Mark matching job as complete (idempotent)
+					c.executionCtx.waitUntil(
+						c.env.ANALYTICS.prepare(
+							'UPDATE transform_jobs SET status = ?, completed_at = COALESCE(completed_at, ?), output_size = COALESCE(output_size, ?) WHERE job_id = ? AND status NOT IN (?, ?)',
+						).bind('complete', Date.now(), bytes, cacheKey, 'complete', 'failed').run().catch(() => {}),
+					);
+				}
+
+				return resp;
 			}
-
-			return resp;
+		} else {
+			rlog.info('Edge cache MISS', { path });
 		}
-		rlog.info('Cache MISS', { path });
 	}
 
-	// 3b. Check R2 for previously transformed results.
+	// 3b. Check R2 persistent storage for previously transformed results.
 	//     ALL transform results (binding, cdn-cgi, container) are stored in R2
-	//     for persistent global availability. On hit: stream from R2, tee into
-	//     cache.put (for future same-colo edge cache hits) + serve to client.
+	//     for durable global availability. On hit: stream from R2, promote into
+	//     edge cache (for future same-colo hits) + serve to client.
 	//
 	//     NOTE: This runs even with ?debug. Debug skips edge cache reads/writes
 	//     but still serves from R2 — intentional, so container job results are
 	//     visible immediately and D1 job status gets updated.
 	const r2Result = await c.env.VIDEOS.get(r2TransformKey);
 	if (r2Result) {
-		rlog.info('R2 transform cache HIT', { r2Key: r2TransformKey, size: r2Result.size });
+		rlog.info('R2 storage HIT', { r2Key: r2TransformKey, size: r2Result.size });
 		// Update D1 job status to complete (if it was tracked as a queue job).
 		if (c.env.ANALYTICS) {
 			c.executionCtx.waitUntil(
@@ -339,7 +350,7 @@ export async function transformHandler(c: HonoContext) {
 		headers.set('X-Source-Type', storedSourceType);
 		headers.set('X-Origin', originMatch.origin.name);
 		headers.set('X-Cache-Key', cacheKey);
-		headers.set('X-R2-Cache', 'HIT');
+		headers.set('X-R2-Stored', 'true');
 		if (params.derivative) headers.set('X-Derivative', params.derivative);
 		if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
 		if (params.width) headers.set('X-Resolved-Width', String(params.width));
@@ -854,14 +865,14 @@ export async function transformHandler(c: HonoContext) {
 		if (params.derivative) headers.set('X-Derivative', params.derivative);
 		if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
 
-		// Determine cacheability early — used for both X-R2-Cache header and storage
+		// Determine cacheability early — used for both X-R2-Stored header and R2 persistence
 		const isPendingPassthrough = headers.get('X-Transform-Pending') === 'true';
 		const shouldCache = !skipCache && !isPendingPassthrough && transformed.status >= 200 && transformed.status < 400;
 
 		// Debug headers
 		headers.set('X-Cache-Key', cacheKey);
-		// X-R2-Cache: HIT = result is stored in R2 (serves from R2 on edge eviction)
-		headers.set('X-R2-Cache', shouldCache ? 'HIT' : 'MISS');
+		// X-R2-Stored: whether the result is durably stored in R2 persistent storage
+		headers.set('X-R2-Stored', shouldCache ? 'true' : 'false');
 		headers.set('X-Origin', originMatch.origin.name);
 		headers.set('X-Source-Type', sourceType);
 		headers.set('X-Transform-Source', transformSource);

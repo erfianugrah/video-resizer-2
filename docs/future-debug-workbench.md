@@ -46,7 +46,7 @@ preview, no param builder, no way to test variations without manually editing UR
 | │ x-transform-source: cdn-cgi │  │ origin: { name: standard }│ |
 | │ x-processing-time-ms: 450   │  │ needsContainer: false     │ |
 | │ x-cache-key: video:bbb:...  │  │ resolvedWidth: 1280       │ |
-| │ x-r2-cache: HIT             │  │ ...                       │ |
+| │ x-r2-stored: HIT             │  │ ...                       │ |
 | │ cf-cache-status: HIT         │  │                           │ |
 | │ (highlight x-* in cyan)     │  │                           │ |
 | └─────────────────────────────┘  └───────────────────────────┘ |
@@ -89,7 +89,7 @@ preview, no param builder, no way to test variations without manually editing UR
 
 - **Summary bar**: status, size, time, content-type, cache status (same as current).
 - **Debug headers**: filtered to `x-*` headers, highlighted in cyan. Show
-  `x-transform-source`, `x-processing-time-ms`, `x-cache-key`, `x-r2-cache`,
+  `x-transform-source`, `x-processing-time-ms`, `x-cache-key`, `x-r2-stored`,
   `x-source-type`, `x-origin`, `cf-cache-status`, `cf-resized`.
 - **All headers**: collapsible full header list.
 - **Diagnostics JSON**: collapsible, syntax-highlighted (same as current but

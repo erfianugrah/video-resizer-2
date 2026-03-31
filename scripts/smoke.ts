@@ -337,31 +337,31 @@ test('cache: Cache-Tag on fresh transform', async () => {
 	assertContains(h(r, 'cache-tag'), 'origin:', 'tag origin');
 });
 
-test('cache: fresh transform sets X-R2-Cache: MISS', async () => {
+test('cache: fresh transform sets X-R2-Stored: false (debug bypasses storage)', async () => {
 	// Use a unique width to force a fresh transform
 	const r = await GET(`${SMALL}?width=327&debug`);
 	assertEq(r.status, 200, 'status');
-	// Fresh transform — R2 had nothing, so MISS
-	assertEq(h(r, 'x-r2-cache'), 'MISS', 'x-r2-cache on fresh');
+	// Debug request — not stored in R2
+	assertEq(h(r, 'x-r2-stored'), 'false', 'x-r2-stored on debug');
 });
 
-test('cache: R2 persistent store (X-R2-Cache: HIT after prior transform)', async () => {
-	// First request stores to R2 (awaited, not waitUntil)
+test('cache: R2 persistent storage (served from R2 after prior transform)', async () => {
+	// First request stores to R2
 	await GET(`${SMALL}?width=328`);
-	// Debug request bypasses edge cache, Worker checks R2 — should HIT
+	// Debug request bypasses edge cache, Worker checks R2 — should serve from R2
 	const r = await GET(`${SMALL}?width=328&debug`);
 	assertEq(r.status, 200, 'status');
-	assertEq(h(r, 'x-r2-cache'), 'HIT', 'x-r2-cache');
+	assertEq(h(r, 'x-r2-stored'), 'true', 'x-r2-stored');
 });
 
-test('cache: edge HIT after R2 promotion shows both headers', async () => {
+test('cache: edge HIT after R2 promotion', async () => {
 	// Populate R2 via normal request
 	await GET(`${SMALL}?width=329`);
 	await sleep(500);
 	// Debug request: R2 HIT, promotes to edge cache
 	await GET(`${SMALL}?width=329&debug`);
 	await sleep(500);
-	// Normal request: edge HIT, response has X-R2-Cache: HIT from promotion
+	// Normal request: edge HIT
 	const r = await GET(`${SMALL}?width=329`);
 	assertEq(h(r, 'cf-cache-status'), 'HIT', 'cf-cache-status');
 });
@@ -491,11 +491,11 @@ test('?debug skips edge cache, serves from R2 or fresh transform', async () => {
 	// First request without debug populates R2
 	await GET(`${SMALL}?width=334`);;
 	await sleep(1000);
-	// Debug request should serve from R2 (X-R2-Cache: HIT) or fresh (X-R2-Cache: MISS)
+	// Debug request should serve from R2 or fresh transform
 	const r = await GET(`${SMALL}?width=334&debug`);;
 	assertEq(r.status, 200, 'status');
 	assertEq(h(r, 'content-type'), 'video/mp4', 'content-type');
-	assert(!!h(r, 'x-r2-cache'), 'has x-r2-cache header');
+	assert(!!h(r, 'x-r2-stored'), 'has x-r2-stored header');
 });
 
 // Source type verification
@@ -503,8 +503,8 @@ test('source: small2 uses r2 or remote on fresh transform', async () => {
 	const r = await GET(`${SMALL}?width=337&debug`);
 	// On fresh transform, x-source-type is set. On R2 HIT, it may be absent.
 	const st = h(r, 'x-source-type');
-	const r2 = h(r, 'x-r2-cache');
-	if (r2 === 'MISS') {
+	const r2Stored = h(r, 'x-r2-stored');
+	if (r2Stored === 'false') {
 		// Fresh transform — source type should be present
 		assertOneOf(st, ['r2', 'remote', 'fallback'], 'x-source-type on fresh');
 	}
@@ -832,7 +832,7 @@ if (includeContainer) {
 			const r = await GET(url, { timeout: 600_000 });
 			const ct = h(r, 'content-type');
 			const status = r.status;
-			console.log(` status=${status} ct=${ct} size=${sz(r)} r2=${h(r, 'x-r2-cache')}`);
+			console.log(` status=${status} ct=${ct} size=${sz(r)} r2stored=${h(r, 'x-r2-stored')}`);
 			// 200 + video/mp4 = container result stored in R2 and served
 			if (status === 200 && ct === 'video/mp4') {
 				assertLt(sz(r), 725_000_000, 'transformed size');

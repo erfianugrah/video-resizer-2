@@ -43,7 +43,7 @@ curl https://your-domain.com/rocky.mp4?impolicy=mobile&imwidth=854
 | `X-Derivative` | Resolved derivative name |
 | `X-Resolved-Width` / `X-Resolved-Height` | Final dimensions |
 | `X-Cache-Key` | Deterministic cache key |
-| `X-R2-Cache` | `HIT` if served from R2 persistent store |
+| `X-R2-Stored` | `true` if result is durably stored in R2 |
 | `X-Transform-Pending` | `true` if container async (202 response) |
 | `X-Job-Id` | Job ID for queue-based container transforms |
 | `X-Playback-Loop` / `Autoplay` / `Muted` / `Preload` | Playback hints |

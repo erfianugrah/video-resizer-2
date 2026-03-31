@@ -394,7 +394,7 @@ describe('Response headers', () => {
 		const uniqueWidth = 300 + Math.floor(Math.random() * 50);
 		const resp = await req(`${SMALL}?width=${uniqueWidth}&debug`, { timeout: 60_000 });
 		expect(resp.status).toBe(200);
-		const r2Cache = h(resp, 'x-r2-cache');
+		const r2Cache = h(resp, 'x-r2-stored');
 		// Only check processing time on fresh transforms (R2 MISS)
 		if (r2Cache === 'MISS') {
 			const ms = parseInt(h(resp, 'x-processing-time-ms') ?? '', 10);

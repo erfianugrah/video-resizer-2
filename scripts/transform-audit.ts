@@ -158,7 +158,7 @@ interface DownloadResult {
 	actualPath: string;
 	/** x-source-type header (r2, remote, fallback). */
 	sourceType: string;
-	/** x-r2-cache header (HIT, MISS). */
+	/** x-r2-stored header (HIT, MISS). */
 	r2Cache: string;
 	/** x-cache-key header. */
 	cacheKey: string;
@@ -227,7 +227,7 @@ function downloadWithRetry(
 			status: 'ok',
 			actualPath: headers['x-transform-source'] ?? 'unknown',
 			sourceType: headers['x-source-type'] ?? '',
-			r2Cache: headers['x-r2-cache'] ?? '',
+			r2Cache: headers['x-r2-stored'] ?? '',
 			cacheKey: headers['x-cache-key'] ?? '',
 			edgeCache: headers['cf-cache-status'] ?? '',
 			httpStatus,

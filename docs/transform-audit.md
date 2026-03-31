@@ -208,6 +208,6 @@ npm run test:audit -- --concurrency 2 # fewer parallel requests
 
 Requires: `ffprobe` (ffmpeg), `curl`. Downloads each transform variant,
 saves to `/tmp/transform-audit/live/`, runs ffprobe, captures response
-headers (`x-transform-source`, `x-r2-cache`, etc.) to verify actual
+headers (`x-transform-source`, `x-r2-stored`, etc.) to verify actual
 transform path. Retries on passthrough detection. Outputs report to
 `docs/transform-audit.md` and JSON to `/tmp/transform-audit/live/audit-results.json`.

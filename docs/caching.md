@@ -73,9 +73,11 @@ Deterministic, built from resolved params (after derivative resolution):
 
 ## Cache busting
 
-### Automatic (R2 sources)
+### Version-based (all source types)
 
-R2 object etag is included in the cache key. When the source video is replaced in R2, the etag changes and all cached transforms are automatically invalidated.
+Cache version (from KV) is included in the cache key. When a source changes, bump the version via `POST /admin/cache/bust`. This invalidates all cached transforms for that path across both R2 persistent storage and edge cache. R2 etag is NOT used in the cache key — it's unavailable at lookup time (before source fetch) and caused key mismatches between storage and lookup paths.
+
+Edge cache staleness is detected at serve time: the `X-Cache-Key` header in the cached response is compared against the current key. A version mismatch causes the stale entry to be treated as a MISS and overwritten.
 
 ### Manual (remote sources)
 
