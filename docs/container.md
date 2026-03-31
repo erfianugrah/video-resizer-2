@@ -51,7 +51,7 @@ FFmpegContainer DO:
   -> Runs ffmpeg with all available CPU cores
   -> Reports progress via /internal/job-progress -> D1 percent update
   -> Streams output to callback via outbound handler
-  -> Outbound handler stores result in R2 (_transformed/{cacheKey})
+  -> Outbound handler stores result in R2 (_transformed/{cacheKey}) with source freshness metadata
 
 Next Client Request:
   -> R2 HIT -> tee to edge cache + serve
@@ -81,7 +81,7 @@ Next Client Request:
 ```json
 {
     "status": "queued",
-    "jobId": "video:big_buck_bunny_1080p.mov:w=320:c=auto:v=3",
+    "jobId": "video:big_buck_bunny_1080p.mov:w=320:c=auto",
     "message": "Video is being transformed. Retry shortly.",
     "path": "/big_buck_bunny_1080p.mov",
     "sse": "https://your-domain.com/sse/job/video%3Abig_buck_bunny..."
@@ -150,7 +150,7 @@ The `FFmpegContainer.outbound` static handler intercepts ALL outbound HTTP from 
 | Path | Method | Action |
 |------|--------|--------|
 | `/internal/job-progress` | GET | Update D1 status + percent progress |
-| `/internal/container-result` | POST | Store result in R2, update D1 status |
+| `/internal/container-result` | POST | Store result in R2 (with source freshness metadata: etag, last-modified), update D1 status |
 | `/internal/r2-source` | GET | Serve R2 object via binding (for R2-only sources) |
 | Everything else (GET, >1MB) | GET | Proxy via fetch() with source dedup (R2 cache) |
 | Everything else | * | Proxy via fetch() with http->https upgrade |

@@ -172,7 +172,7 @@ template — every binding, the container DO, queue consumers, and cron trigger:
 | `MEDIA` | Media Transformations | Video transform binding (R2 sources <=100MB) |
 | `VIDEOS` | R2 Bucket | Source videos + transform cache (`_transformed/`) + source cache (`_source-cache/`) |
 | `CONFIG` | KV | Worker configuration (JSON, Zod-validated) |
-| `CACHE_VERSIONS` | KV | Cache version registry for manual busting |
+| `CACHE_VERSIONS` | KV | Optional manual force-bust (version appended to cache key only when set) |
 | `ANALYTICS` | D1 | Request analytics (`transform_log`) + job registry (`transform_jobs`) |
 | `FFMPEG_CONTAINER` | Container DO | FFmpeg transforms (4 vCPU, 12GB RAM, 20GB disk) |
 | `TRANSFORM_QUEUE` | Queue Producer | Durable job dispatch for container transforms |

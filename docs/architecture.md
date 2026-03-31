@@ -34,7 +34,9 @@ Origin Matching
 Cache Lookup (Workers run BEFORE cache — CDN cache is only checked via fetch())
   |-- 1. cache.match() — checks local data-center cache (same store as CDN edge)
   |     On custom domains, CDN may also serve HIT before Worker runs (cf-cache-status: HIT)
-  |-- 2. R2 persistent store (_transformed/{cacheKey}) -> cache.put + serve via cache.match
+  |-- 2. R2 persistent store (_transformed/{cacheKey}) -> validate source freshness -> cache.put + serve
+  |     R2 HITs are validated: stored etag/last-modified compared against current source.
+  |     Stale R2 results are discarded and re-transformed.
   |-- 3. Request coalescing (in-memory LRU) -> join in-flight transform
   |
   v
@@ -55,7 +57,8 @@ Response Processing
   |-- Content-Type correction (audio/mp4, image/jpeg, image/png)
   |-- Cache-Control (per-origin TTL by status code)
   |-- Cache-Tag (derivative, origin, mode tags for purge-by-tag)
-  |-- Debug headers (X-Request-ID, X-Processing-Time-Ms, X-Cache-Key, etc.)
+  |-- Debug headers (X-Request-ID, X-Processing-Time-Ms, X-Cache-Key, X-R2-Stored, etc.)
+  |-- Debug requests: Cache-Control: no-store (prevents CDN caching of debug responses)
   |-- Playback hints (X-Playback-Loop/Autoplay/Muted/Preload)
   |
   v
@@ -115,7 +118,7 @@ When `needsContainer` is true or the source exceeds the binding/cdn-cgi size lim
 | Layer | Scope | What it deduplicates |
 |-------|-------|---------------------|
 | Edge cache (`caches.default`) | Per data center | Local data-center cache (same store as CDN). Workers run before cache; `cache.match()`/`cache.put()` are direct API calls. No tiered caching via Cache API. |
-| R2 persistent store | Global | Transform results across all colos |
+| R2 persistent store | Global | Transform results across all colos. Each R2 object stores source etag/last-modified metadata for freshness validation. |
 | `RequestCoalescer` (in-memory LRU) | Per-isolate | Concurrent identical transforms in same Worker invocation. 60s safety timeout prevents stuck entries from blocking forever. 202 responses are excluded (they produce nothing for joiners). |
 | Container DO `jobInFlight` flag | Per-transform (global) | Duplicate async container dispatches |
 | Queue consumer R2 check | Global | Container retries after result already stored |

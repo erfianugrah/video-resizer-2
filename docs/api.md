@@ -43,7 +43,8 @@ curl https://your-domain.com/rocky.mp4?impolicy=mobile&imwidth=854
 | `X-Derivative` | Resolved derivative name |
 | `X-Resolved-Width` / `X-Resolved-Height` | Final dimensions |
 | `X-Cache-Key` | Deterministic cache key |
-| `X-R2-Stored` | `true` if result is durably stored in R2 |
+| `X-R2-Stored` | `true`/`false` — whether the result is durably stored in R2 |
+| `X-Param-Warnings` | Comma-separated warnings for invalid param values (dropped but non-fatal) |
 | `X-Transform-Pending` | `true` if container async (202 response) |
 | `X-Job-Id` | Job ID for queue-based container transforms |
 | `X-Playback-Loop` / `Autoplay` / `Muted` / `Preload` | Playback hints |
@@ -59,7 +60,7 @@ When the source is too large for edge transform, returns 202 with job info:
 ```json
 {
     "status": "queued",
-    "jobId": "video:big_buck_bunny.mov:w=320:c=auto:v=3",
+    "jobId": "video:big_buck_bunny.mov:w=320:c=auto",
     "message": "Video is being transformed. Retry shortly.",
     "path": "/big_buck_bunny.mov",
     "sse": "https://your-domain.com/sse/job/video%3Abig_buck_bunny..."
@@ -72,13 +73,13 @@ When the source is too large for edge transform, returns 202 with job info:
 GET /{path}?debug=view
 ```
 
-Returns JSON diagnostics instead of video. Includes resolved params, matched origin, capture groups, config summary, container routing decision.
+Returns JSON diagnostics instead of video. Includes resolved params, matched origin, capture groups, config summary, container routing decision, R2 freshness validation result, and param warnings.
 
 ```
 GET /{path}?debug
 ```
 
-Bypasses edge cache, forces fresh transform. All `X-*` debug headers are present.
+Bypasses edge cache, forces fresh transform. All `X-*` debug headers are present. Sets `Cache-Control: no-store` to prevent CDN from caching debug responses.
 
 ## Admin endpoints
 
@@ -180,7 +181,7 @@ Job response:
 ```json
 {
     "jobs": [{
-        "job_id": "video:big_buck_bunny.mov:w=320:c=auto:v=3",
+        "job_id": "video:big_buck_bunny.mov:w=320:c=auto",
         "path": "/big_buck_bunny.mov",
         "origin": "standard",
         "status": "transcoding",

@@ -54,7 +54,7 @@ src/
   params/                     # param parsing, Akamai translation, derivatives, responsive
   transform/                  # Media binding, cdn-cgi, FFmpeg container + job types
   sources/                    # origin routing, auth (S3/bearer/header), presigned URLs
-  cache/                      # cache keys, version registry, request coalescing
+  cache/                      # cache keys, freshness validation, version force-bust, request coalescing
   queue/                      # Queue consumer, DLQ consumer, D1 job registry
   analytics/                  # D1 analytics middleware + aggregation queries + schema.sql
 container/
@@ -76,7 +76,7 @@ test/                         # 186 unit + 92 E2E + 22 browser tests
 | `MEDIA` | Media Transformations | Video transform binding |
 | `VIDEOS` | R2 Bucket | Source videos + transform cache + source cache |
 | `CONFIG` | KV | Worker configuration |
-| `CACHE_VERSIONS` | KV | Cache version registry for manual busting |
+| `CACHE_VERSIONS` | KV | Optional manual force-bust (version appended to cache key only when set) |
 | `ANALYTICS` | D1 | Request analytics + job registry (schema.sql) |
 | `FFMPEG_CONTAINER` | Container DO | FFmpeg transforms (4 vCPU, 12GB RAM, 20GB disk) |
 | `TRANSFORM_QUEUE` | Queue | Durable job dispatch with retry + DLQ |

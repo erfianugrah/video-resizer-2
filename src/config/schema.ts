@@ -65,6 +65,18 @@ const TtlSchema = z.object({
 
 // ── Origin ───────────────────────────────────────────────────────────────
 
+/** Per-status Cache-Control overrides. Full header value strings. */
+const CacheControlSchema = z.object({
+	/** Cache-Control for 2xx responses. Default: `public, max-age={ttl.ok}` */
+	ok: z.string().optional(),
+	/** Cache-Control for 3xx responses. Default: `public, max-age={ttl.redirects}` */
+	redirects: z.string().optional(),
+	/** Cache-Control for 4xx responses. Default: `public, max-age={ttl.clientError}` */
+	clientError: z.string().optional(),
+	/** Cache-Control for 5xx responses. Default: `public, max-age={ttl.serverError}` */
+	serverError: z.string().optional(),
+});
+
 const OriginSchema = z.object({
 	name: z.string().min(1),
 	matcher: z.string().min(1),
@@ -78,13 +90,17 @@ const OriginSchema = z.object({
 	ttl: TtlSchema.optional(),
 	useTtlByStatus: z.boolean().optional(),
 	cacheTags: z.array(z.string()).optional(),
+	/** Per-status Cache-Control header overrides. When set, takes precedence
+	 *  over the auto-generated `public, max-age={ttl}` for that status range.
+	 *  Example: `{ ok: "public, max-age=86400, s-maxage=604800, stale-while-revalidate=3600" }` */
+	cacheControl: CacheControlSchema.optional(),
 });
 
 // ── Derivative ───────────────────────────────────────────────────────────
 
 const DerivativeSchema = z.object({
-	width: z.number().int().min(10).max(2000).optional(),
-	height: z.number().int().min(10).max(2000).optional(),
+	width: z.number().int().min(10).max(8192).optional(),
+	height: z.number().int().min(10).max(8192).optional(),
 	mode: z.enum(['video', 'frame', 'spritesheet', 'audio']).optional(),
 	fit: z.enum(['contain', 'scale-down', 'cover']).optional(),
 	quality: z.string().optional(),

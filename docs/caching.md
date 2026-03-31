@@ -6,7 +6,7 @@
 |-------|-------|---------|-----|
 | Edge cache (`caches.default`) | Per data center | Same store accessed by both CDN and Worker Cache API. Data-center-local only (no tiered caching via Cache API). | Per-origin TTL config |
 | R2 persistent store (`_transformed/`) | Global | Survives edge eviction, cross-colo availability | Permanent until busted |
-| KV version registry (`CACHE_VERSIONS`) | Global | Manual cache busting for remote sources | Permanent |
+| KV version registry (`CACHE_VERSIONS`) | Global | Optional manual force-bust (not in default cache key) | Permanent |
 | R2 source cache (`_source-cache/`) | Global | Container source dedup (multiple transforms of same file) | Permanent |
 
 ### How Cloudflare Workers interact with cache
@@ -36,7 +36,7 @@ On subsequent requests:
 1. **Worker runs**, calls `cache.match()` against local data-center cache. If HIT, serves directly.
    (On custom domains, the CDN may also serve from edge cache before the Worker runs —
    `cf-cache-status: HIT` means the Worker was bypassed entirely.)
-2. **Cache MISS, R2 HIT** -> Worker reads from R2, `cache.put` for next time, serves via `cache.match` for range support. D1 job status updated to `complete`.
+2. **Cache MISS, R2 HIT** -> Worker reads R2 object, validates source freshness (stored etag/last-modified vs current source). If fresh, `cache.put` for next time, serves via `cache.match` for range support. If stale, discards R2 result and falls through to full transform. D1 job status updated to `complete`.
 3. **R2 MISS** -> full transform pipeline
 
 ### Why cache.put then cache.match?
@@ -52,7 +52,7 @@ Workers.
 Deterministic, built from resolved params (after derivative resolution):
 
 ```
-{mode}:{path}[:w={width}][:h={height}][:mode-specific-params][:e={etag}][:v={version}]
+{mode}:{path}[:w={width}][:h={height}][:mode-specific-params][:container-params]
 ```
 
 ### Mode-specific segments
@@ -64,22 +64,28 @@ Deterministic, built from resolved params (after derivative resolution):
 | spritesheet | `:t={time}:d={duration}:ic={imageCount}` |
 | audio | `:t={time}:d={duration}:f={format}` |
 
+### Container-only param segments
+
+When present, these are appended to the cache key:
+
+`:fps={fps}:spd={speed}:rot={rotate}:crop={crop}:br={bitrate}`
+
 ### Key properties
 
 - **Derivative name excluded**: only resolved dimensions matter. `?derivative=tablet` and `?width=1280&height=720` produce identical keys.
-- **Etag for R2 sources**: `e={etag.slice(0,8)}` — automatic busting when source changes.
-- **Version for remote sources**: `v={version}` — manual busting via admin API.
+- **No version or etag in key**: source freshness is validated at serve time via R2 metadata (stored source etag/last-modified compared against current source). This eliminates key mismatches between storage and lookup paths.
+- **Container-only params included**: fps, speed, rotate, crop, and bitrate are part of the cache key when present, ensuring different container transforms produce distinct cache entries.
 - **Sanitized**: spaces and special chars replaced, slashes preserved.
 
 ## Cache busting
 
-### Version-based (all source types)
+### Automatic (source freshness validation)
 
-Cache version (from KV) is included in the cache key. When a source changes, bump the version via `POST /admin/cache/bust`. This invalidates all cached transforms for that path across both R2 persistent storage and edge cache. R2 etag is NOT used in the cache key — it's unavailable at lookup time (before source fetch) and caused key mismatches between storage and lookup paths.
+R2 transform objects store the source's etag and last-modified timestamp as custom metadata. On every R2 HIT, these values are compared against the current source. If the source has changed, the stale R2 result is discarded and the transform is re-executed. This provides automatic cache invalidation without embedding version/etag in the cache key.
 
-Edge cache staleness is detected at serve time: the `X-Cache-Key` header in the cached response is compared against the current key. A version mismatch causes the stale entry to be treated as a MISS and overwritten.
+### Manual force-bust (KV CACHE_VERSIONS)
 
-### Manual (remote sources)
+The `CACHE_VERSIONS` KV binding is optional and used only for manual force-busting. When a version is set for a path, it is appended to the cache key (`:v={version}`), causing immediate cache misses on all existing entries. This is useful for forcing re-transforms when the source hasn't changed (e.g., after a config change).
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" \
@@ -88,7 +94,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
     https://your-domain.com/admin/cache/bust
 ```
 
-Bumps the KV version number for that path. All cache keys for that path now include the new version, causing cache misses on the old versions.
+Sets a KV version for that path. The version is appended to the cache key only when present, causing misses on all prior entries for that path.
 
 ### Purge by tag
 

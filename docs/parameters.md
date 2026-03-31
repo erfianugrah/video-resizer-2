@@ -2,12 +2,12 @@
 
 ## Canonical transform params
 
-All params are parsed once via Zod into a `TransformParams` object. Derivatives overlay onto this object. The result is immutable.
+All params are parsed once via Zod into a `TransformParams` object. Derivatives overlay onto this object. The result is immutable. `parseParams()` returns warnings for invalid values (e.g., out-of-range width) — the invalid param is dropped but parsing continues. Warnings are surfaced via `X-Param-Warnings` response header.
 
 | Param | Type | Range/Values | Binding | Container | Notes |
 |-------|------|-------------|---------|-----------|-------|
-| `width` | int | 10-2000 | `.transform({width})` | ffmpeg `-vf scale=W:-2` | |
-| `height` | int | 10-2000 | `.transform({height})` | ffmpeg `-vf scale=-2:H` | |
+| `width` | int | 10-8192 | `.transform({width})` | ffmpeg `-vf scale=W:-2` | |
+| `height` | int | 10-8192 | `.transform({height})` | ffmpeg `-vf scale=-2:H` | |
 | `fit` | enum | contain, scale-down, cover | `.transform({fit})` | ffmpeg pad/crop | |
 | `mode` | enum | video, frame, spritesheet, audio | `.output({mode})` | ffmpeg output flags | |
 | `time` | string | 0s-10m | `.output({time})` | ffmpeg `-ss` | Seek offset |
@@ -29,7 +29,7 @@ All params are parsed once via Zod into a `TransformParams` object. Derivatives 
 | `autoplay` | bool | true/false | N/A | N/A | Playback hint header only |
 | `muted` | bool | true/false | N/A | N/A | Playback hint header only |
 | `preload` | enum | none, metadata, auto | N/A | N/A | Playback hint header only |
-| `debug` | any | `view` for JSON diagnostics | N/A | N/A | Skips cache |
+| `debug` | any | `view` for JSON diagnostics | N/A | N/A | Skips cache, sets `Cache-Control: no-store` |
 
 ## Akamai/IMQuery translation
 
@@ -72,7 +72,7 @@ Single translation function in `params/schema.ts`. Produces a new URLSearchParam
 - First breakpoint where `imwidth <= maxWidth` wins
 - No breakpoint match -> falls back to `config.responsive.defaultDerivative`
 - If `impolicy` (explicit derivative) is also present, it takes priority over breakpoint matching
-- Matching happens in `handlers/transform.ts` before Zod validation, so values >2000 work correctly
+- Matching happens in `handlers/transform.ts` before Zod validation, so any raw pixel value works (not clamped to 8192)
 
 ## Auto mode switching
 

@@ -98,10 +98,10 @@ export function ParamForm({ params, onChange, config }: ParamFormProps) {
 					<Input
 						type="number"
 						min={10}
-						max={2000}
+						max={8192}
 						value={params.width}
 						onChange={(e) => set('width', e.target.value)}
-						placeholder="10-2000"
+						placeholder="10-8192"
 						className="font-data text-xs"
 						aria-label="Width"
 					/>
@@ -110,10 +110,10 @@ export function ParamForm({ params, onChange, config }: ParamFormProps) {
 					<Input
 						type="number"
 						min={10}
-						max={2000}
+						max={8192}
 						value={params.height}
 						onChange={(e) => set('height', e.target.value)}
-						placeholder="10-2000"
+						placeholder="10-8192"
 						className="font-data text-xs"
 						aria-label="Height"
 					/>

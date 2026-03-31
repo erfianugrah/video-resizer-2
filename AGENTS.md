@@ -115,9 +115,11 @@ No singletons, no `getInstance()`.
 function producing new URLSearchParams. `needsContainer()` is pure. Derivative
 dims replace explicit params (canonical invariant).
 
-**Cache key:** `{mode}:{path}[:w=][:h=][:t=][:d=][:fit=][:a=][:q=][:c=][:e=][:v=]`.
-Includes ALL transform-affecting params. Derivative name excluded (only resolved
-dims matter).
+**Cache key:** `{mode}:{path}[:w=][:h=][:t=][:d=][:fit=][:a=][:q=][:c=][:fps=][:spd=][:rot=][:crop=][:br=]`.
+No version or etag in key — source freshness validated via R2 metadata on every
+HIT. Container-only params (fps, speed, rotate, crop, bitrate) included when
+present. KV version appended only on manual force-bust. Derivative name excluded
+(only resolved dims matter).
 
 **Coalescer:** signal pattern — stores `Promise<void>`, joiners await then read
 from cache independently. No `.clone()`, no `.tee()`, no shared Response objects.
