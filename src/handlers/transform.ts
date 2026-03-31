@@ -258,10 +258,7 @@ export async function transformHandler(c: HonoContext) {
 			rawImHeight,
 			warnings,
 		};
-		return c.json({ diagnostics, _meta: { ts: Date.now() } }, 200, {
-			'Cache-Control': 'no-store',
-			'CDN-Cache-Control': 'no-store',
-		});
+		return c.json({ diagnostics, _meta: { ts: Date.now() } });
 	}
 
 	// 3. Compute cache key ONCE — single source of truth for all lookups.
@@ -412,15 +409,14 @@ export async function transformHandler(c: HonoContext) {
 			const transformSource = r2Result.customMetadata?.transformSource ?? 'unknown';
 			const displaySourceType = storedSourceType ?? 'unknown';
 
-			// R2 HIT is always a 2xx — use ok cache control
-			const cc = originMatch.origin.cacheControl;
-			const r2CacheControl = skipCache ? 'no-store' : (cc?.ok ?? `public, max-age=${originMatch.origin.ttl?.ok ?? 86400}`);
+			// R2 HIT is always a 2xx — Cache-Control from origin config
+			const r2cc = originMatch.origin.cacheControl;
+			const r2CacheControl = r2cc?.ok ?? `public, max-age=${originMatch.origin.ttl?.ok ?? 86400}`;
 
 			const headers = new Headers();
 			headers.set('Content-Type', ct);
 			headers.set('Content-Length', String(r2Result.size));
 			headers.set('Cache-Control', r2CacheControl);
-			if (skipCache) headers.set('CDN-Cache-Control', 'no-store');
 			headers.set('Accept-Ranges', 'bytes');
 			headers.set('Via', 'video-resizer');
 			headers.set('X-Request-ID', requestId);
@@ -956,24 +952,18 @@ export async function transformHandler(c: HonoContext) {
 		const transformSource = rawTransformSource ?? 'unknown';
 		const durationMs = Math.round(performance.now() - startTime);
 
-		// 6. Response headers
-		// Resolve Cache-Control: debug → no-store, else cacheControl override → ttl fallback
+		// 6. Response headers — Cache-Control from origin config (per status code)
+		const s = transformed.status;
+		const cc = originMatch.origin.cacheControl;
+		const ttl = originMatch.origin.ttl;
 		let cacheControlHeader: string;
-		if (skipCache) {
-			cacheControlHeader = 'no-store';
-		} else {
-			const s = transformed.status;
-			const cc = originMatch.origin.cacheControl;
-			const ttl = originMatch.origin.ttl;
-			if (s >= 200 && s < 300) cacheControlHeader = cc?.ok ?? `public, max-age=${ttl?.ok ?? 86400}`;
-			else if (s >= 300 && s < 400) cacheControlHeader = cc?.redirects ?? `public, max-age=${ttl?.redirects ?? 300}`;
-			else if (s >= 400 && s < 500) cacheControlHeader = cc?.clientError ?? `public, max-age=${ttl?.clientError ?? 60}`;
-			else cacheControlHeader = cc?.serverError ?? `public, max-age=${ttl?.serverError ?? 10}`;
-		}
+		if (s >= 200 && s < 300) cacheControlHeader = cc?.ok ?? `public, max-age=${ttl?.ok ?? 86400}`;
+		else if (s >= 300 && s < 400) cacheControlHeader = cc?.redirects ?? `public, max-age=${ttl?.redirects ?? 300}`;
+		else if (s >= 400 && s < 500) cacheControlHeader = cc?.clientError ?? `public, max-age=${ttl?.clientError ?? 60}`;
+		else cacheControlHeader = cc?.serverError ?? `public, max-age=${ttl?.serverError ?? 10}`;
 
 		const headers = new Headers(transformed.headers);
 		headers.set('Cache-Control', cacheControlHeader);
-		if (skipCache) headers.set('CDN-Cache-Control', 'no-store');
 		headers.set('Accept-Ranges', 'bytes');
 		headers.set('X-Request-ID', requestId);
 		headers.set('Via', 'video-resizer');
