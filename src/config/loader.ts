@@ -13,12 +13,19 @@ const DEFAULT_CONFIG: AppConfig = AppConfigSchema.parse({
 			name: 'default',
 			matcher: '.*',
 			sources: [{ type: 'remote', url: 'https://localhost', priority: 0 }],
+			ttl: { ok: 86400, redirects: 300, clientError: 60, serverError: 10 },
+			cacheControl: {
+				ok: 'public, max-age=86400, s-maxage=86400',
+				redirects: 'public, max-age=300',
+				clientError: 'public, max-age=60',
+				serverError: 'no-store',
+			},
 		},
 	],
 	derivatives: {
-		desktop: { width: 1920, height: 1080 },
-		tablet: { width: 1280, height: 720 },
-		mobile: { width: 854, height: 640 },
+		desktop: { width: 1920, height: 1080, fit: 'contain' },
+		tablet: { width: 1280, height: 720, fit: 'contain' },
+		mobile: { width: 854, height: 640, fit: 'contain' },
 		thumbnail: { width: 640, height: 360, mode: 'frame', format: 'png', fit: 'cover', time: '2s' },
 	},
 	responsive: {

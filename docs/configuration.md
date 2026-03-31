@@ -44,11 +44,17 @@ curl -H "Authorization: Bearer $TOKEN" \
     sources: Source[],         // Priority-ordered source list (min 1)
     quality?: string,          // Per-origin default quality
     videoCompression?: string, // Per-origin default compression
-    ttl?: {                    // Per-origin cache TTL by status range
-        ok: number,            // 200-299
-        redirects: number,     // 300-399
-        clientError: number,   // 400-499
-        serverError: number    // 500-599
+    ttl?: {                    // Per-origin cache TTL by status range (used to generate
+        ok: number,            //   Cache-Control: public, max-age={ttl} when cacheControl
+        redirects: number,     //   is not set for that status range)
+        clientError: number,
+        serverError: number
+    },
+    cacheControl?: {           // Full Cache-Control header per status range.
+        ok?: string,           //   Overrides ttl-based generation. Supports all
+        redirects?: string,    //   directives: s-maxage, stale-while-revalidate,
+        clientError?: string,  //   no-store, private, etc.
+        serverError?: string
     },
     useTtlByStatus?: boolean,
     cacheTags?: string[]       // Custom tags for purge-by-tag
@@ -94,13 +100,16 @@ Auth env var values are read from Worker env at runtime (`envRecord[accessKeyVar
     "quality": "high",
     "compression": "medium",
     "time": "0s",
-    "duration": "5m",
+    "duration": "30s",
     "format": "mp4",
     "audio": true
 }
 ```
 
 All fields optional. Only specified fields override the request params.
+Width/height range: 10–8192. Duration >60s triggers container routing.
+
+**Note**: Avoid putting `duration` on video derivatives unless you specifically want to cap clip length. A derivative with `duration: "5m"` forces every request through the container path (>60s triggers `needsContainer`), even for sources the binding could handle.
 
 ### Responsive
 
@@ -147,21 +156,27 @@ All fields optional. Only specified fields override the request params.
                 { "type": "r2", "priority": 1, "bucketBinding": "VIDEOS" }
             ],
             "ttl": { "ok": 86400, "redirects": 300, "clientError": 60, "serverError": 10 },
+            "cacheControl": {
+                "ok": "public, max-age=86400, s-maxage=86400",
+                "redirects": "public, max-age=300",
+                "clientError": "public, max-age=60",
+                "serverError": "no-store"
+            },
             "videoCompression": "auto",
             "cacheTags": ["video-cdn"]
         }
     ],
     "derivatives": {
-        "desktop":   { "width": 1920, "height": 1080, "fit": "contain", "duration": "5m" },
-        "tablet":    { "width": 1280, "height": 720, "fit": "contain", "duration": "5m" },
-        "mobile":    { "width": 854, "height": 640, "fit": "contain", "duration": "5m" },
-        "thumbnail": { "width": 640, "height": 360, "mode": "frame", "format": "png", "time": "0s" }
+        "desktop":   { "width": 1920, "height": 1080, "fit": "contain" },
+        "tablet":    { "width": 1280, "height": 720, "fit": "contain" },
+        "mobile":    { "width": 854, "height": 640, "fit": "contain" },
+        "thumbnail": { "width": 640, "height": 360, "mode": "frame", "format": "png", "fit": "cover", "time": "2s" }
     },
     "responsive": {
         "breakpoints": [
             { "maxWidth": 854, "derivative": "mobile" },
             { "maxWidth": 1280, "derivative": "tablet" },
-            { "maxWidth": 1920, "derivative": "desktop" }
+            { "maxWidth": 99999, "derivative": "desktop" }
         ],
         "defaultDerivative": "desktop"
     },

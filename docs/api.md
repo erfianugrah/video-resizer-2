@@ -50,7 +50,7 @@ curl https://your-domain.com/rocky.mp4?impolicy=mobile&imwidth=854
 | `X-Playback-Loop` / `Autoplay` / `Muted` / `Preload` | Playback hints |
 | `Via` | `video-resizer` (loop prevention) |
 | `Cache-Tag` | Tags for purge-by-tag |
-| `Cache-Control` | `public, max-age={ttl}` |
+| `Cache-Control` | From origin config: `cacheControl.{status}` override or `public, max-age={ttl}` fallback |
 | `Accept-Ranges` | `bytes` |
 
 ### 202 response (container async)
