@@ -448,20 +448,24 @@ export async function transformHandler(c: HonoContext) {
 			if (originMatch.origin.cacheTags) tags.push(...originMatch.origin.cacheTags);
 			if (tags.length) headers.set('Cache-Tag', tags.join(','));
 
-			// Store R2 result in edge cache, then serve via cache.match for
+			if (skipCache) {
+				// Debug: serve R2 result directly, no edge cache interaction
+				return new Response(r2Result.body, { status: 200, headers });
+			}
+
+			// Promote R2 result to edge cache, then serve via cache.match for
 			// native range request handling (206 + Content-Range).
-			// Use the non-debug URL so non-debug requests benefit from edge cache.
-			const edgeCacheUrl = requestUrl.replace(/[&?]debug(&|$)/, '$1').replace(/[?&]$/, '');
+			const edgeCacheUrl = requestUrl;
 			const edgeCacheReq = new Request(edgeCacheUrl, { method: 'GET' });
 			await cache.put(edgeCacheReq, new Response(r2Result.body, { status: 200, headers: new Headers(headers) }));
-			rlog.info('R2 result cached in colo', { path });
+			rlog.info('R2 result promoted to edge cache', { path });
 
 			// Serve via cache.match — handles Range headers natively
 			const cachedFromR2 = await cache.match(new Request(edgeCacheUrl, c.req.raw));
 			if (cachedFromR2) return cachedFromR2;
 
 			// Fallback — cache.put may not be immediately visible to cache.match.
-			// Re-read from R2 to serve the client (body was consumed by cache.put above).
+			// Re-read from R2 (body was consumed by cache.put above).
 			rlog.warn('cache.match miss after R2 promotion, re-reading from R2', { path });
 			const r2Fallback = await c.env.VIDEOS.get(r2TransformKey);
 			if (r2Fallback) {
