@@ -58,6 +58,42 @@ function toCallbackUrl(zoneHost: string, path: string): string {
 }
 
 /**
+ * Build a 202 Accepted response for async container transforms.
+ *
+ * Every async-routed request (oversized R2/remote/binding-fallback/cdn-cgi
+ * 9402 fallback) returns the same response shape: JSON body with jobId
+ * and SSE URL + standard headers that let the client poll /sse/job/:id
+ * for progress.
+ *
+ * @param jobId     D1/cache key identifying the job (also the SSE subject)
+ * @param path      Original request path, echoed in the body for logging
+ * @param zoneHost  Current request host (used to build the SSE URL)
+ * @param status    'queued' | 'processing' — echoed in body for diagnostics
+ * @param message   Optional human-readable detail (e.g. 9402 fallback reason)
+ */
+function buildPendingResponse(
+	jobId: string,
+	path: string,
+	zoneHost: string,
+	status: 'queued' | 'processing',
+	message: string = 'Video is being transformed. Retry shortly.',
+): Response {
+	const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(jobId)}`;
+	return new Response(
+		JSON.stringify({ status, jobId, message, path, sse: sseUrl }),
+		{
+			status: 202,
+			headers: {
+				'Content-Type': 'application/json',
+				'Retry-After': '10',
+				'X-Transform-Pending': 'true',
+				'X-Job-Id': jobId,
+			},
+		},
+	);
+}
+
+/**
  * Enqueue a container transform job via Cloudflare Queue (durable, retryable),
  * or fall back to fire-and-forget via waitUntil if queue is not configured.
  */
@@ -566,12 +602,8 @@ export async function transformHandler(c: HonoContext) {
 								sourcePath: resolved,
 								version,
 							}, rlog);
-							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 							return {
-								transformed: new Response(
-									JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
-								),
+								transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
 								etag, sourceType,
 							};
 						}
@@ -611,12 +643,8 @@ export async function transformHandler(c: HonoContext) {
 								sourcePath: remoteUrl,
 								version,
 							}, rlog);
-							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 							return {
-								transformed: new Response(
-									JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
-								),
+								transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
 								etag, sourceType,
 							};
 						}
@@ -691,12 +719,8 @@ export async function transformHandler(c: HonoContext) {
 								sourcePath: resolved,
 								version,
 							}, rlog);
-							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 							return {
-								transformed: new Response(
-									JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-									{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
-								),
+								transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
 								etag, sourceType,
 							};
 						}
@@ -732,12 +756,8 @@ export async function transformHandler(c: HonoContext) {
 										origin: originMatch.origin.name, sourceType, etag,
 										sourcePath: resolved, version,
 									}, rlog);
-									const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 									return {
-										transformed: new Response(
-											JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-											{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
-										),
+										transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
 										etag, sourceType,
 									};
 								}
@@ -813,12 +833,8 @@ export async function transformHandler(c: HonoContext) {
 							sourcePath: sourceUrl,
 							version,
 						}, rlog);
-						const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
 						return {
-							transformed: new Response(
-								JSON.stringify({ status: result.status, jobId: cacheKey, message: 'Video is being transformed. Retry shortly.', path, sse: sseUrl }),
-								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
-							),
+							transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
 							etag, sourceType,
 						};
 					}
@@ -859,11 +875,13 @@ export async function transformHandler(c: HonoContext) {
 								sourcePath: sourceUrl,
 								version,
 							}, rlog);
-							const sseUrl = `https://${zoneHost}/sse/job/${encodeURIComponent(cacheKey)}`;
-							return { transformed: new Response(
-								JSON.stringify({ status: result.status, jobId: cacheKey, message: `Source too large for edge transform (${cfErrDesc}). Processing via container.`, path, sse: sseUrl }),
-								{ status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '10', 'X-Transform-Pending': 'true', 'X-Job-Id': cacheKey } },
-							), etag, sourceType };
+							return {
+								transformed: buildPendingResponse(
+									cacheKey, path, zoneHost, result.status,
+									`Source too large for edge transform (${cfErrDesc}). Processing via container.`,
+								),
+								etag, sourceType,
+							};
 						}
 						// All other CF errors — push descriptive message and try next source
 						errors.push(`${source.type}(p${source.priority}): cdn-cgi err=${cfErr} (${cfErrDesc}) for ${resolved}`);
