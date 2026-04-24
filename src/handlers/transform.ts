@@ -58,6 +58,52 @@ function toCallbackUrl(zoneHost: string, path: string): string {
 }
 
 /**
+ * Route a transform request to the async container path.
+ *
+ * Combines the two-step pattern used at every async dispatch site:
+ *   1. Enqueue (via queue or fire-and-forget fallback)
+ *   2. Build the 202 pending Response
+ *
+ * Returns the Response only; callers retain their own `etag` / `sourceType`
+ * captured from the source-resolution phase.
+ */
+async function routeToAsyncContainer(
+	c: HonoContext,
+	zoneHost: string,
+	path: string,
+	cacheKey: string,
+	job: {
+		sourceUrl: string;
+		origin: string;
+		sourceType: string;
+		etag?: string;
+		sourceLastModified?: string;
+		sourcePath?: string;
+		version?: number;
+	},
+	params: TransformParams,
+	requestUrl: string,
+	rlog: { info: (msg: string, data?: Record<string, unknown>) => void; warn: (msg: string, data?: Record<string, unknown>) => void; error: (msg: string, data?: Record<string, unknown>) => void },
+	message?: string,
+): Promise<Response> {
+	const result = await enqueueOrFireAndForget(c, {
+		jobId: cacheKey,
+		path,
+		params,
+		sourceUrl: job.sourceUrl,
+		callbackCacheKey: cacheKey,
+		requestUrl,
+		origin: job.origin,
+		sourceType: job.sourceType,
+		etag: job.etag,
+		sourceLastModified: job.sourceLastModified,
+		sourcePath: job.sourcePath,
+		version: job.version,
+	}, rlog);
+	return buildPendingResponse(cacheKey, path, zoneHost, result.status, message);
+}
+
+/**
  * Build a 202 Accepted response for async container transforms.
  *
  * Every async-routed request (oversized R2/remote/binding-fallback/cdn-cgi
@@ -589,23 +635,12 @@ export async function transformHandler(c: HonoContext) {
 								size: object.size, fetchableUrl,
 							});
 							object.body.cancel().catch(() => {});
-							const result = await enqueueOrFireAndForget(c, {
-								jobId: cacheKey,
-								path,
-								params,
+							const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
 								sourceUrl: fetchableUrl,
-								callbackCacheKey: cacheKey,
-								requestUrl,
 								origin: originMatch.origin.name,
-								sourceType,
-								etag,
-								sourcePath: resolved,
-								version,
-							}, rlog);
-							return {
-								transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
-								etag, sourceType,
-							};
+								sourceType, etag, sourcePath: resolved, version,
+							}, params, requestUrl, rlog);
+							return { transformed, etag, sourceType };
 						}
 
 						// Fits in sync container (<= 256MB)
@@ -629,24 +664,12 @@ export async function transformHandler(c: HonoContext) {
 							rlog.info('Container-only + oversized remote, enqueuing async container', {
 								size: contentLength, fetchableUrl: remoteUrl,
 							});
-							const result = await enqueueOrFireAndForget(c, {
-								jobId: cacheKey,
-								path,
-								params,
+							const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
 								sourceUrl: remoteUrl,
-								callbackCacheKey: cacheKey,
-								requestUrl,
 								origin: originMatch.origin.name,
-								sourceType,
-								etag,
-								sourceLastModified,
-								sourcePath: remoteUrl,
-								version,
-							}, rlog);
-							return {
-								transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
-								etag, sourceType,
-							};
+								sourceType, etag, sourceLastModified, sourcePath: remoteUrl, version,
+							}, params, requestUrl, rlog);
+							return { transformed, etag, sourceType };
 						}
 
 						const resp = await fetch(remoteUrl);
@@ -706,23 +729,12 @@ export async function transformHandler(c: HonoContext) {
 								size: object.size, fetchableUrl,
 							});
 							object.body.cancel().catch(() => {});
-							const result = await enqueueOrFireAndForget(c, {
-								jobId: cacheKey,
-								path,
-								params,
+							const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
 								sourceUrl: fetchableUrl,
-								callbackCacheKey: cacheKey,
-								requestUrl,
 								origin: originMatch.origin.name,
-								sourceType,
-								etag,
-								sourcePath: resolved,
-								version,
-							}, rlog);
-							return {
-								transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
-								etag, sourceType,
-							};
+								sourceType, etag, sourcePath: resolved, version,
+							}, params, requestUrl, rlog);
+							return { transformed, etag, sourceType };
 						}
 
 						// Large but fits in sync (100-256MB): wait for container
@@ -750,16 +762,12 @@ export async function transformHandler(c: HonoContext) {
 									const fetchableUrl = remoteSource && 'url' in remoteSource
 										? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
 										: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
-									const result = await enqueueOrFireAndForget(c, {
-										jobId: cacheKey, path, params, sourceUrl: fetchableUrl,
-										callbackCacheKey: cacheKey, requestUrl,
-										origin: originMatch.origin.name, sourceType, etag,
-										sourcePath: resolved, version,
-									}, rlog);
-									return {
-										transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
-										etag, sourceType,
-									};
+									const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
+										sourceUrl: fetchableUrl,
+										origin: originMatch.origin.name,
+										sourceType, etag, sourcePath: resolved, version,
+									}, params, requestUrl, rlog);
+									return { transformed, etag, sourceType };
 								}
 								const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
 								transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, retryObject.body, params, instanceKey);
@@ -819,24 +827,12 @@ export async function transformHandler(c: HonoContext) {
 						rlog.info('Remote source exceeds cdn-cgi limit, enqueuing async container', {
 							size: contentLength, limit: CDN_CGI_SIZE_LIMIT, sourceUrl,
 						});
-						const result = await enqueueOrFireAndForget(c, {
-							jobId: cacheKey,
-							path,
-							params,
+						const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
 							sourceUrl,
-							callbackCacheKey: cacheKey,
-							requestUrl,
 							origin: originMatch.origin.name,
-							sourceType,
-							etag,
-							sourceLastModified,
-							sourcePath: sourceUrl,
-							version,
-						}, rlog);
-						return {
-							transformed: buildPendingResponse(cacheKey, path, zoneHost, result.status),
-							etag, sourceType,
-						};
+							sourceType, etag, sourceLastModified, sourcePath: sourceUrl, version,
+						}, params, requestUrl, rlog);
+						return { transformed, etag, sourceType };
 					}
 
 					rlog.info('Source resolved (cdn-cgi)', { path: resolved, sourceUrl, sourceType, contentLength });
@@ -861,25 +857,15 @@ export async function transformHandler(c: HonoContext) {
 
 						// 9402 = origin too large — route to container if available
 						if (cfErr === 9402 && (c.env.FFMPEG_CONTAINER || c.env.TRANSFORM_QUEUE)) {
-							const result = await enqueueOrFireAndForget(c, {
-								jobId: cacheKey,
-								path,
-								params,
+							const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
 								sourceUrl,
-								callbackCacheKey: cacheKey,
-								requestUrl,
 								origin: originMatch.origin.name,
-								sourceType,
-								etag,
-								sourceLastModified,
-								sourcePath: sourceUrl,
-								version,
-							}, rlog);
+								sourceType, etag, sourceLastModified, sourcePath: sourceUrl, version,
+							}, params, requestUrl, rlog,
+								`Source too large for edge transform (${cfErrDesc}). Processing via container.`,
+							);
 							return {
-								transformed: buildPendingResponse(
-									cacheKey, path, zoneHost, result.status,
-									`Source too large for edge transform (${cfErrDesc}). Processing via container.`,
-								),
+								transformed,
 								etag, sourceType,
 							};
 						}
