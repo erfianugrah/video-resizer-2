@@ -86,6 +86,7 @@ export async function loadConfig(kv: KVNamespace | undefined): Promise<AppConfig
 			...(kvConfig.version !== undefined && { version: kvConfig.version }),
 			...(pick('cdnCgiSizeLimit') !== undefined && { cdnCgiSizeLimit: pick('cdnCgiSizeLimit') }),
 			...(pick('bindingSizeLimit') !== undefined && { bindingSizeLimit: pick('bindingSizeLimit') }),
+			...(pick('asyncContainerThreshold') !== undefined && { asyncContainerThreshold: pick('asyncContainerThreshold') }),
 		};
 
 		const result = AppConfigSchema.safeParse(configInput);

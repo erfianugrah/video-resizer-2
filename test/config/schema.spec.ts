@@ -152,4 +152,31 @@ describe('config/schema', () => {
 			expect(result.success).toBe(true);
 		});
 	});
+
+	describe('size limit fields', () => {
+		it('defaults cdnCgiSizeLimit to 100 MiB', () => {
+			const result = AppConfigSchema.parse(minimalConfig);
+			expect(result.cdnCgiSizeLimit).toBe(100 * 1024 * 1024);
+		});
+
+		it('defaults bindingSizeLimit to 100 MiB', () => {
+			const result = AppConfigSchema.parse(minimalConfig);
+			expect(result.bindingSizeLimit).toBe(100 * 1024 * 1024);
+		});
+
+		it('defaults asyncContainerThreshold to 256 MiB', () => {
+			const result = AppConfigSchema.parse(minimalConfig);
+			expect(result.asyncContainerThreshold).toBe(256 * 1024 * 1024);
+		});
+
+		it('accepts override for asyncContainerThreshold', () => {
+			const result = AppConfigSchema.parse({ ...minimalConfig, asyncContainerThreshold: 512 * 1024 * 1024 });
+			expect(result.asyncContainerThreshold).toBe(512 * 1024 * 1024);
+		});
+
+		it('rejects non-positive asyncContainerThreshold', () => {
+			const result = AppConfigSchema.safeParse({ ...minimalConfig, asyncContainerThreshold: 0 });
+			expect(result.success).toBe(false);
+		});
+	});
 });

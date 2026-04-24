@@ -544,7 +544,7 @@ export async function transformHandler(c: HonoContext) {
 
 						// Size-based routing: very large files use async queue path
 						// to avoid streaming hundreds of MB through the DO.
-						if (object.size > 256 * 1024 * 1024) {
+						if (object.size > config.asyncContainerThreshold) {
 							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
 							const fetchableUrl = remoteSource && 'url' in remoteSource
 								? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
@@ -593,7 +593,7 @@ export async function transformHandler(c: HonoContext) {
 							sourceLastModified = headResp.headers.get('Last-Modified') ?? undefined;
 						}
 
-						if (contentLength > 256 * 1024 * 1024) {
+						if (contentLength > config.asyncContainerThreshold) {
 							rlog.info('Container-only + oversized remote, enqueuing async container', {
 								size: contentLength, fetchableUrl: remoteUrl,
 							});
@@ -665,8 +665,8 @@ export async function transformHandler(c: HonoContext) {
 					if (object.size > BINDING_SIZE_LIMIT && c.env.FFMPEG_CONTAINER) {
 						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
 
-						if (object.size > 256 * 1024 * 1024) {
-							// Very large (>256MB): use queue-based async container.
+						if (object.size > config.asyncContainerThreshold) {
+							// Above asyncContainerThreshold (default 256MB): use queue-based async container.
 							// Prefer remote URL for large files — container fetches directly
 							// via internet (enableInternet=true), avoiding Worker memory limits.
 							// Fall back to /internal/r2-source only for R2-only sources.
@@ -719,8 +719,8 @@ export async function transformHandler(c: HonoContext) {
 							rlog.warn('Binding failed, falling back to container', { error: bindingErr.message });
 							const retryObject = await bucket.get(resolved);
 							if (retryObject) {
-								// Check size: >256MB must use async path to avoid DO timeout
-								if (retryObject.size > 256 * 1024 * 1024) {
+								// Check size: above asyncContainerThreshold must use async path to avoid DO timeout
+								if (retryObject.size > config.asyncContainerThreshold) {
 									retryObject.body.cancel().catch(() => {});
 									const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
 									const fetchableUrl = remoteSource && 'url' in remoteSource

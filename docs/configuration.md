@@ -32,6 +32,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `container` | Container (optional) | — | FFmpeg container settings |
 | `cdnCgiSizeLimit` | number | 104857600 (100 MiB) | Max input for cdn-cgi edge transform |
 | `bindingSizeLimit` | number | 104857600 (100 MiB) | Max input for env.MEDIA binding |
+| `asyncContainerThreshold` | number | 268435456 (256 MiB) | Above this, container transforms go async (queue + SSE) to avoid DO memory pressure |
 
 ### Origin
 

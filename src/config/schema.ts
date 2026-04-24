@@ -166,6 +166,11 @@ export const AppConfigSchema = z.object({
 	/** Media binding input size limit in bytes. Default 100 MiB. Sources larger
 	 *  than this are routed to the container (sync or async). */
 	bindingSizeLimit: z.number().positive().default(100 * 1024 * 1024),
+	/** Threshold above which a container transform is queued async (fire-and-
+	 *  forget, SSE progress) instead of streamed through the sync container
+	 *  path. Default 256 MiB. The sync path buffers source bytes through the
+	 *  DO, so large inputs should go async to avoid memory pressure. */
+	asyncContainerThreshold: z.number().positive().default(256 * 1024 * 1024),
 });
 
 /** Validated application config. Immutable after parse. */
