@@ -13,8 +13,8 @@
  */
 import { createServer } from 'node:http';
 import { execFile, spawn } from 'node:child_process';
-import { writeFile, readFile, unlink, mkdir, stat } from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
+import { unlink, mkdir, stat } from 'node:fs/promises';
+import { createWriteStream, createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
@@ -113,12 +113,8 @@ async function handleTransform(req, res) {
 		}
 		const params = JSON.parse(paramsJson);
 
-		// Buffer input body to file
-		const chunks = [];
-		for await (const chunk of req) {
-			chunks.push(chunk);
-		}
-		await writeFile(inputPath, Buffer.concat(chunks));
+		// Stream input body to file (avoid buffering multi-GB in memory)
+		await pipeline(req, createWriteStream(inputPath));
 
 		// Build ffmpeg args
 		const args = buildFfmpegArgs(inputPath, outputPath, params);
@@ -127,16 +123,16 @@ async function handleTransform(req, res) {
 		// Run ffmpeg
 		await runFfmpeg(args);
 
-		// Read output from correct path (may differ by mode/format)
+		// Stream output back (read size for Content-Length header, then stream bytes)
 		const actualOutput = findOutputFile(outputPath, params);
-		const output = await readFile(actualOutput);
+		const { size } = await stat(actualOutput);
 		const contentType = getContentType(params);
 
 		res.writeHead(200, {
 			'Content-Type': contentType,
-			'Content-Length': output.length.toString(),
+			'Content-Length': size.toString(),
 		});
-		res.end(output);
+		await pipeline(createReadStream(actualOutput), res);
 	} finally {
 		// Cleanup temp files (including alternative extensions)
 		await unlink(inputPath).catch(() => {});
@@ -165,12 +161,8 @@ async function handleTransformAsync(req, res) {
 	const inputPath = join(WORK_DIR, `${id}-input`);
 	const outputPath = join(WORK_DIR, `${id}-output.mp4`);
 
-	// Buffer input
-	const chunks = [];
-	for await (const chunk of req) {
-		chunks.push(chunk);
-	}
-	await writeFile(inputPath, Buffer.concat(chunks));
+	// Stream input to file (avoid buffering multi-GB in memory)
+	await pipeline(req, createWriteStream(inputPath));
 
 	// Respond 202 immediately
 	res.writeHead(202, { 'Content-Type': 'application/json' });
@@ -184,17 +176,19 @@ async function handleTransformAsync(req, res) {
 		await runFfmpeg(args);
 
 		const actualOutput = findOutputFile(outputPath, params);
-		const output = await readFile(actualOutput);
+		const { size } = await stat(actualOutput);
 		const contentType = getContentType(params);
 
-		// POST result to callback
+		// POST result to callback — stream from disk to avoid buffering multi-GB output
 		await fetch(callbackUrl, {
 			method: 'POST',
 			headers: {
 				'Content-Type': contentType,
+				'Content-Length': String(size),
 				'X-Transform-ID': id,
 			},
-			body: output,
+			body: Readable.toWeb(createReadStream(actualOutput)),
+			duplex: 'half',
 		});
 		console.log(`[${id}] Callback sent to ${callbackUrl}`);
 	} catch (err) {
@@ -487,14 +481,14 @@ async function handleTransformUrl(req, res) {
 
 		// Determine actual output path (may have different extension)
 		const actualOutput = findOutputFile(outputPath, params);
-		const output = await readFile(actualOutput);
+		const { size } = await stat(actualOutput);
 		const contentType = getContentType(params);
 
 		res.writeHead(200, {
 			'Content-Type': contentType,
-			'Content-Length': output.length.toString(),
+			'Content-Length': size.toString(),
 		});
-		res.end(output);
+		await pipeline(createReadStream(actualOutput), res);
 	} catch (err) {
 		console.error(`[${id}] URL transform failed:`, err);
 		res.writeHead(500, { 'Content-Type': 'application/json' });
