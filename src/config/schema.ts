@@ -81,7 +81,6 @@ const OriginSchema = z.object({
 	name: z.string().min(1),
 	matcher: z.string().min(1),
 	captureGroups: z.array(z.string()).optional(),
-	processPath: z.boolean().optional(),
 	sources: z.array(SourceSchema).min(1),
 	// Per-origin transform defaults
 	quality: z.string().optional(),

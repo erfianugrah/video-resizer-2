@@ -8,7 +8,11 @@
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export function log(level: LogLevel, msg: string, data?: Record<string, unknown>): void {
-	console.log(JSON.stringify({ ...data, level, msg, ts: Date.now() }));
+	const payload = JSON.stringify({ ...data, level, msg, ts: Date.now() });
+	if (level === 'error') console.error(payload);
+	else if (level === 'warn') console.warn(payload);
+	else if (level === 'debug') console.debug(payload);
+	else console.log(payload);
 }
 
 export const debug = (msg: string, data?: Record<string, unknown>) => log('debug', msg, data);

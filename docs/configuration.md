@@ -40,7 +40,6 @@ curl -H "Authorization: Bearer $TOKEN" \
     name: string,              // Unique identifier
     matcher: string,           // Regex pattern (tested against request path)
     captureGroups?: string[],  // Named groups from regex match
-    processPath?: boolean,     // Passthrough flag
     sources: Source[],         // Priority-ordered source list (min 1)
     quality?: string,          // Per-origin default quality
     videoCompression?: string, // Per-origin default compression

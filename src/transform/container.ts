@@ -24,7 +24,7 @@
 import { Container, ContainerProxy } from '@cloudflare/containers';
 import type { TransformParams } from '../params/schema';
 import { AppError } from '../errors';
-import { completeJob, failJob, updateJobStatus, updateJobProgress } from '../queue/jobs-db';
+import { completeJob, failJob, updateJobProgress } from '../queue/jobs-db';
 import * as log from '../log';
 
 // ContainerProxy must be exported from the Worker entry point for outbound
