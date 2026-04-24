@@ -98,6 +98,27 @@ export async function retryJobHandler(c: HonoContext) {
 			const row = await db.prepare('SELECT * FROM transform_jobs WHERE job_id = ?')
 				.bind(body.jobId).first<Record<string, unknown>>();
 			if (row && row.source_url) {
+				// Re-HEAD source to restore freshness metadata (etag, last-modified).
+				// The original enqueue captures these from the HEAD fetch; D1 doesn't
+				// store them, so without a re-HEAD the requeued job would produce an
+				// R2 object with undefined etag and revalidation would never detect
+				// source changes. HEAD failures are non-fatal — the job still runs
+				// without freshness metadata.
+				let etag: string | undefined;
+				let sourceLastModified: string | undefined;
+				try {
+					const head = await fetch(row.source_url as string, { method: 'HEAD' });
+					if (head.ok) {
+						etag = head.headers.get('etag') ?? undefined;
+						sourceLastModified = head.headers.get('last-modified') ?? undefined;
+					}
+				} catch (err) {
+					log.warn('Re-HEAD failed on retry, proceeding without freshness metadata', {
+						jobId: body.jobId,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+
 				await c.env.TRANSFORM_QUEUE.send({
 					jobId: body.jobId,
 					path: row.path,
@@ -107,9 +128,12 @@ export async function retryJobHandler(c: HonoContext) {
 					requestUrl: `https://${new URL(c.req.url).host}${row.path}`,
 					origin: row.origin ?? 'unknown',
 					sourceType: row.source_type ?? 'unknown',
+					etag,
+					sourceLastModified,
+					sourcePath: row.path as string,
 					createdAt: Date.now(),
 				});
-				log.info('Job re-enqueued', { jobId: body.jobId });
+				log.info('Job re-enqueued', { jobId: body.jobId, hasEtag: !!etag });
 			}
 		}
 
