@@ -146,7 +146,7 @@ function JobCard({ job, stale, onRetry, onDelete, actionLoading }: {
 									size="icon-sm"
 									title="Delete job"
 									disabled={actionLoading === job.job_id}
-									onClick={() => { if (window.confirm(`Delete job ${job.job_id}?`)) onDelete(job.job_id); }}
+									onClick={() => onDelete(job.job_id)}
 									className="text-lv-red hover:text-lv-red"
 								>
 									<Trash2 className="h-3 w-3" />

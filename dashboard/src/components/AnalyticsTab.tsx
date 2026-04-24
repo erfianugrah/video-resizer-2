@@ -230,7 +230,7 @@ export function AnalyticsTab() {
 							</div>
 
 							{/* Latency cards */}
-							<div className="grid grid-cols-3 gap-3">
+							<div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
 								<StatCard label="Avg Latency" value={fmtLatency(summary.avgLatencyMs)} icon={Clock} color="bg-lv-peach/10 text-lv-peach" delay={200} />
 								<StatCard label="p50 Latency" value={fmtLatency(summary.p50LatencyMs)} icon={TrendingUp} color="bg-lv-cyan/10 text-lv-cyan" delay={250} />
 								<StatCard label="p95 Latency" value={fmtLatency(summary.p95LatencyMs)} icon={TrendingUp} color="bg-lv-red/10 text-lv-red" delay={300} />
@@ -258,7 +258,7 @@ export function AnalyticsTab() {
 											type="checkbox"
 											checked={showAdminErrors}
 											onChange={(e) => setShowAdminErrors(e.target.checked)}
-											className="rounded border-border"
+											className="rounded border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
 											aria-label="Show admin and internal errors"
 										/>
 										<span className={T.muted}>Show admin/internal</span>

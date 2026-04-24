@@ -37,6 +37,7 @@ function SegmentedGroup<V extends string | number>({
 		>
 			{options.map((opt) => (
 				<button
+					type="button"
 					key={opt.value}
 					role="radio"
 					aria-checked={value === opt.value}

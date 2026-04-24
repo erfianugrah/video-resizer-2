@@ -117,11 +117,12 @@ function HeadersPanel({ headers, compareHeaders }: { headers: [string, string][]
 			</dl>
 			{otherHeaders.length > 0 && (
 				<>
-					<button
-						type="button"
-						onClick={() => setShowAll(!showAll)}
-						className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-					>
+				<button
+					type="button"
+					onClick={() => setShowAll(!showAll)}
+					aria-expanded={showAll}
+					className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+				>
 						<ChevronDown className={cn('h-3 w-3 transition-transform', showAll && 'rotate-180')} />
 						{showAll ? 'Hide' : 'Show'} {otherHeaders.length} more headers
 					</button>
@@ -150,7 +151,7 @@ function AkamaiTester({ path, params, skipCache }: { path: string; params: Param
 	const [copied, setCopied] = useState<'canonical' | 'akamai' | null>(null);
 
 	const copy = (text: string, which: 'canonical' | 'akamai') => {
-		navigator.clipboard.writeText(text);
+		navigator.clipboard.writeText(text).catch(() => {/* ignore clipboard errors in insecure contexts */});
 		setCopied(which);
 		setTimeout(() => setCopied(null), 1500);
 	};
@@ -164,7 +165,7 @@ function AkamaiTester({ path, params, skipCache }: { path: string; params: Param
 				<div className="space-y-1">
 					<div className="flex items-center justify-between">
 						<span className={T.sectionLabel}>Canonical</span>
-						<button type="button" onClick={() => copy(canonical, 'canonical')} className="text-muted-foreground hover:text-foreground">
+						<button type="button" onClick={() => copy(canonical, 'canonical')} aria-label="Copy canonical URL" className="text-muted-foreground hover:text-foreground">
 							{copied === 'canonical' ? <Check className="h-3 w-3 text-lv-green" /> : <Copy className="h-3 w-3" />}
 						</button>
 					</div>
@@ -173,7 +174,7 @@ function AkamaiTester({ path, params, skipCache }: { path: string; params: Param
 				<div className="space-y-1">
 					<div className="flex items-center justify-between">
 						<span className={T.sectionLabel}>Akamai / IMQuery</span>
-						<button type="button" onClick={() => copy(akamai, 'akamai')} className="text-muted-foreground hover:text-foreground">
+						<button type="button" onClick={() => copy(akamai, 'akamai')} aria-label="Copy Akamai URL" className="text-muted-foreground hover:text-foreground">
 							{copied === 'akamai' ? <Check className="h-3 w-3 text-lv-green" /> : <Copy className="h-3 w-3" />}
 						</button>
 					</div>
@@ -319,7 +320,7 @@ function UrlBar({ url }: { url: string }) {
 	const [copied, setCopied] = useState(false);
 
 	const copy = () => {
-		navigator.clipboard.writeText(url);
+		navigator.clipboard.writeText(url).catch(() => {/* ignore clipboard errors in insecure contexts */});
 		setCopied(true);
 		setTimeout(() => setCopied(false), 1500);
 	};
@@ -328,7 +329,7 @@ function UrlBar({ url }: { url: string }) {
 		<div className="flex items-center gap-2 bg-muted/30 rounded-md px-3 py-1.5 border border-border">
 			<Globe className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
 			<code className="text-xs font-data flex-1 truncate">{url}</code>
-			<button type="button" onClick={copy} className="text-muted-foreground hover:text-foreground shrink-0">
+			<button type="button" onClick={copy} aria-label="Copy URL" className="text-muted-foreground hover:text-foreground shrink-0">
 				{copied ? <Check className="h-3.5 w-3.5 text-lv-green" /> : <Copy className="h-3.5 w-3.5" />}
 			</button>
 		</div>
@@ -529,7 +530,7 @@ export function DebugTab() {
 						type="checkbox"
 						checked={skipCache}
 						onChange={(e) => setSkipCache(e.target.checked)}
-						className="rounded border-border"
+						className="rounded border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
 					/>
 					Skip cache (debug)
 				</label>
