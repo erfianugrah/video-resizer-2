@@ -11,7 +11,8 @@ import { AppError } from '../errors';
 import { translateAkamaiParams, parseParams, needsContainer, type TransformParams } from '../params/schema';
 import { resolveDerivative } from '../params/derivatives';
 import { resolveResponsive } from '../params/responsive';
-import { matchOrigin, sortedSources, resolveSourcePath } from '../sources/router';
+import { matchOrigin, sortedSources, resolveSourcePath, type OriginMatch } from '../sources/router';
+import type { AppConfig } from '../config/schema';
 import { transformViaBinding } from '../transform/binding';
 import { transformViaCdnCgi } from '../transform/cdncgi';
 import { transformViaContainer, transformViaContainerUrl, buildContainerInstanceKey } from '../transform/container';
@@ -25,6 +26,137 @@ import { registerJob } from '../queue/jobs-db';
 import * as log from '../log';
 
 type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
+
+/**
+ * Output of the source-resolution + transform pipeline.
+ * Produced by resolveAndTransform() and consumed by the response-assembly
+ * phase which layers on headers, analytics, and cache storage.
+ */
+interface TransformResult {
+	/** The raw transform Response (binding / cdn-cgi / container / 202 pending). */
+	transformed: Response;
+	/** Source etag, if known from HEAD/R2 metadata. */
+	etag?: string;
+	/** Source Last-Modified, if known from HEAD. */
+	sourceLastModified?: string;
+	/** Resolved source path (R2 key or remote URL). */
+	sourcePath?: string;
+	/** Matched source tier ('r2' | 'remote' | 'fallback' | 'unknown'). */
+	sourceType: string;
+	/** Which transform engine produced the response ('binding' | 'cdn-cgi' | 'container' | 'passthrough' | 'unknown'). */
+	transformSource: string;
+	/** Cache version used, if any. */
+	version?: number;
+}
+
+/** Logger used by transform-side helpers. Matches the rlog shape built in main handler. */
+type RLog = {
+	info: (msg: string, data?: Record<string, unknown>) => void;
+	warn: (msg: string, data?: Record<string, unknown>) => void;
+	error: (msg: string, data?: Record<string, unknown>) => void;
+};
+
+/**
+ * Build the final response Headers bundle for a successful transform.
+ *
+ * Copies upstream headers, applies Cache-Control from origin config, sets
+ * debug/observability headers (X-Request-ID, X-Origin, X-Cache-Key, etc.),
+ * applies playback hints, corrects Content-Type for non-video modes, and
+ * assembles Cache-Tag for purge-by-tag. Strips Set-Cookie + Vary=* which
+ * prevent caching.
+ */
+function buildFinalHeaders(args: {
+	transformed: Response;
+	transformSource: string;
+	sourceType: string;
+	etag?: string;
+	params: TransformParams;
+	originMatch: OriginMatch;
+	cacheKey: string;
+	durationMs: number;
+	requestId: string;
+	warnings: { param: string; reason: string }[];
+	skipCache: boolean;
+}): { headers: Headers; shouldCache: boolean; isPendingPassthrough: boolean } {
+	const { transformed, transformSource, sourceType, etag, params, originMatch, cacheKey, durationMs, requestId, warnings, skipCache } = args;
+
+	const cacheControlHeader = buildCacheControl(
+		transformed.status,
+		originMatch.origin.cacheControl,
+		originMatch.origin.ttl,
+	);
+
+	const headers = new Headers(transformed.headers);
+	headers.set('Cache-Control', cacheControlHeader);
+	headers.set('Accept-Ranges', 'bytes');
+	headers.set('X-Request-ID', requestId);
+	headers.set('Via', 'video-resizer');
+	if (params.derivative) headers.set('X-Derivative', params.derivative);
+	if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
+
+	// Determine cacheability — used for both X-R2-Stored header and R2 persistence
+	const isPendingPassthrough = headers.get('X-Transform-Pending') === 'true';
+	const shouldCache = !skipCache && !isPendingPassthrough && transformed.status >= 200 && transformed.status < 400;
+
+	// Debug headers
+	headers.set('X-Cache-Key', cacheKey);
+	headers.set('X-R2-Stored', shouldCache ? 'true' : 'false');
+	headers.set('X-Origin', originMatch.origin.name);
+	headers.set('X-Source-Type', sourceType);
+	headers.set('X-Transform-Source', transformSource);
+	headers.set('X-Processing-Time-Ms', String(durationMs));
+	if (etag) headers.set('X-Source-Etag', etag);
+	if (params.width) headers.set('X-Resolved-Width', String(params.width));
+	if (params.height) headers.set('X-Resolved-Height', String(params.height));
+	if (warnings.length > 0) headers.set('X-Param-Warnings', warnings.map((w) => `${w.param}: ${w.reason}`).join('; '));
+
+	// Playback hint headers
+	if (params.loop !== undefined) headers.set('X-Playback-Loop', String(params.loop));
+	if (params.autoplay !== undefined) headers.set('X-Playback-Autoplay', String(params.autoplay));
+	if (params.muted !== undefined) headers.set('X-Playback-Muted', String(params.muted));
+	if (params.preload) headers.set('X-Playback-Preload', params.preload);
+
+	// Content-type correction for non-video modes (skip for 202 pending responses)
+	if (!isPendingPassthrough) {
+		if (params.mode === 'audio') {
+			headers.set('Content-Type', 'audio/mp4');
+		} else if (params.mode === 'frame') {
+			const fmt = params.format === 'png' ? 'image/png' : 'image/jpeg';
+			headers.set('Content-Type', fmt);
+		} else if (params.mode === 'spritesheet') {
+			headers.set('Content-Type', 'image/jpeg');
+		}
+	}
+
+	// Cache-Tag for purge-by-tag
+	const tags: string[] = [];
+	if (params.derivative) tags.push(`derivative:${params.derivative}`);
+	tags.push(`origin:${originMatch.origin.name}`);
+	if (params.mode && params.mode !== 'video') tags.push(`mode:${params.mode}`);
+	if (originMatch.origin.cacheTags) tags.push(...originMatch.origin.cacheTags);
+	if (tags.length) headers.set('Cache-Tag', tags.join(','));
+
+	// Strip headers that prevent caching
+	headers.delete('Set-Cookie');
+	if (headers.get('Vary') === '*') headers.delete('Vary');
+
+	return { headers, shouldCache, isPendingPassthrough };
+}
+
+/**
+ * Build the Cache-Control header for a response based on status and origin config.
+ * Prefers origin.cacheControl.{range} over derived `public, max-age={ttl.range}`.
+ */
+function buildCacheControl(
+	status: number,
+	cacheControl: { ok?: string; redirects?: string; clientError?: string; serverError?: string } | undefined,
+	ttl: { ok?: number; redirects?: number; clientError?: number; serverError?: number } | undefined,
+): string {
+	if (status >= 200 && status < 300) return cacheControl?.ok ?? `public, max-age=${ttl?.ok ?? 86400}`;
+	if (status >= 300 && status < 400) return cacheControl?.redirects ?? `public, max-age=${ttl?.redirects ?? 300}`;
+	if (status >= 400 && status < 500) return cacheControl?.clientError ?? `public, max-age=${ttl?.clientError ?? 60}`;
+	return cacheControl?.serverError ?? `public, max-age=${ttl?.serverError ?? 10}`;
+}
 
 /** CF Media Transformations error codes from Cf-Resized header.
  *  See: https://developers.cloudflare.com/stream/transform-videos/troubleshooting/ */
@@ -42,6 +174,386 @@ const CF_ERROR_CODES: Record<number, string> = {
 	9517: 'Internal CF transform error',
 	9523: 'Internal CF transform error',
 };
+
+/** Input bundle for resolveAndTransform — groups the pipeline context. */
+interface ResolveContext {
+	c: HonoContext;
+	path: string;
+	params: TransformParams;
+	cacheKey: string;
+	requestUrl: string;
+	rlog: RLog;
+	config: AppConfig;
+	originMatch: OriginMatch;
+	forceBust: boolean;
+	forceVersion: number;
+}
+
+/**
+ * Source resolution + transform pipeline.
+ *
+ * Walks the origin's sources in priority order: container-only params first,
+ * then normal binding/cdn-cgi routing, then raw passthrough as last resort.
+ * Returns a TransformResult for the response-assembly phase to wrap in
+ * final headers, analytics, and R2/cache storage.
+ *
+ * Throws AppError(502, 'ALL_SOURCES_FAILED') if every source and the
+ * passthrough fallback fail to produce a Response.
+ */
+async function resolveAndTransform(ctx: ResolveContext): Promise<TransformResult> {
+	const { c, path, params, cacheKey, requestUrl, rlog, config, originMatch, forceBust, forceVersion } = ctx;
+	const envRecord = c.env as unknown as Record<string, unknown>;
+	const zoneHost = new URL(c.req.url).host;
+	const sources = sortedSources(originMatch.origin);
+	const errors: string[] = [];
+	let transformed: Response | null = null;
+	let etag: string | undefined;
+	let sourceLastModified: string | undefined;
+	let sourcePath: string | undefined;
+	let version: number | undefined;
+	let sourceType: string = 'unknown';
+	let transformSource: string = 'unknown';
+
+	// Container-only params: route to container if enabled
+	const containerNeeded = needsContainer(params);
+	if (containerNeeded && config.container?.enabled && c.env.FFMPEG_CONTAINER) {
+		rlog.info('Routing to FFmpeg container', { path });
+		for (const source of sources) {
+			try {
+				const resolved = resolveSourcePath(source, path, originMatch.captures);
+
+				if (source.type === 'r2') {
+					const bucket = envRecord[source.bucketBinding] as R2Bucket | undefined;
+					if (!bucket) continue;
+					const object = await bucket.get(resolved);
+					if (!object) continue;
+					etag = object.etag;
+					sourcePath = resolved;
+					sourceType = 'r2';
+
+					// Size-based routing: very large files use async queue path
+					// to avoid streaming hundreds of MB through the DO.
+					if (object.size > config.asyncContainerThreshold) {
+						const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
+						const fetchableUrl = remoteSource && 'url' in remoteSource
+							? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
+							: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
+						rlog.info('Container-only + oversized R2, enqueuing async container', {
+							size: object.size, fetchableUrl,
+						});
+						object.body.cancel().catch(() => {});
+						const resp = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
+							sourceUrl: fetchableUrl,
+							origin: originMatch.origin.name,
+							sourceType, etag, sourcePath: resolved, version,
+						}, params, requestUrl, rlog);
+						return { transformed: resp, etag, sourceType, transformSource: 'container', version };
+					}
+
+					// Fits in sync container (<= 256MB)
+					const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
+					transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, object.body, params, instanceKey);
+					transformSource = 'container';
+					break;
+				} else if (source.url) {
+					// Remote source: check size via HEAD, route to async if large
+					const remoteUrl = source.url.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
+					const headResp = await fetch(remoteUrl, { method: 'HEAD' }).catch(() => null);
+					const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
+					sourceType = source.type;
+					sourcePath = remoteUrl;
+					if (headResp) {
+						etag = headResp.headers.get('ETag') ?? undefined;
+						sourceLastModified = headResp.headers.get('Last-Modified') ?? undefined;
+					}
+
+					if (contentLength > config.asyncContainerThreshold) {
+						rlog.info('Container-only + oversized remote, enqueuing async container', {
+							size: contentLength, fetchableUrl: remoteUrl,
+						});
+						const resp = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
+							sourceUrl: remoteUrl,
+							origin: originMatch.origin.name,
+							sourceType, etag, sourceLastModified, sourcePath: remoteUrl, version,
+						}, params, requestUrl, rlog);
+						return { transformed: resp, etag, sourceType, transformSource: 'container', version };
+					}
+
+					const resp = await fetch(remoteUrl);
+					if (resp.ok && resp.body) {
+						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
+						transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, resp.body, params, instanceKey);
+						transformSource = 'container';
+						break;
+					}
+				}
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				errors.push(`container(${source.type}): ${msg}`);
+				continue;
+			}
+		}
+	} else if (containerNeeded) {
+		rlog.warn('Container-only params present but container disabled — proceeding with binding', {
+			params: { fps: params.fps, speed: params.speed, rotate: params.rotate, crop: params.crop, bitrate: params.bitrate, duration: params.duration },
+		});
+	}
+
+	// Normal source loop (skipped if container already produced a result)
+	if (transformed) {
+		// Container handled it — skip to response headers
+	} else for (const source of sources) {
+		try {
+			const resolved = resolveSourcePath(source, path, originMatch.captures);
+
+			if (source.type === 'r2') {
+				// R2 -> check size -> binding (<=100MB) or container (>100MB)
+				const bucket = envRecord[source.bucketBinding] as R2Bucket | undefined;
+				if (!bucket) throw new Error(`R2 binding '${source.bucketBinding}' not available`);
+				const object = await bucket.get(resolved);
+				if (!object) throw new Error(`R2 object not found: ${resolved}`);
+
+				const BINDING_SIZE_LIMIT = config.bindingSizeLimit;
+				etag = object.etag;
+				sourcePath = resolved;
+				sourceType = 'r2';
+				rlog.info('Source fetched (R2)', { path: resolved, size: object.size, etag });
+
+				// Oversized: route to FFmpeg container (async for very large files)
+				if (object.size > BINDING_SIZE_LIMIT && c.env.FFMPEG_CONTAINER) {
+					const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
+
+					if (object.size > config.asyncContainerThreshold) {
+						// Above asyncContainerThreshold (default 256MB): use queue-based async container.
+						// Prefer remote URL for large files — container fetches directly
+						// via internet (enableInternet=true), avoiding Worker memory limits.
+						// Fall back to /internal/r2-source only for R2-only sources.
+						const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
+						const fetchableUrl = remoteSource && 'url' in remoteSource
+							? remoteSource.url.replace(/\/+$/, '') + path
+							: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
+						rlog.info('R2 object too large for sync, enqueuing async container', {
+							size: object.size, fetchableUrl,
+						});
+						object.body.cancel().catch(() => {});
+						const resp = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
+							sourceUrl: fetchableUrl,
+							origin: originMatch.origin.name,
+							sourceType, etag, sourcePath: resolved, version,
+						}, params, requestUrl, rlog);
+						return { transformed: resp, etag, sourceType, transformSource: 'container', version };
+					}
+
+					// Large but fits in sync (100-256MB): wait for container
+					rlog.info('R2 object exceeds binding limit, routing to container', {
+						size: object.size, limit: BINDING_SIZE_LIMIT,
+					});
+					transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, object.body, params, instanceKey);
+					transformSource = 'container';
+					break;
+				}
+
+				try {
+					transformed = await transformViaBinding(c.env.MEDIA, object.body, params);
+					transformSource = 'binding';
+				} catch (bindingErr) {
+					// Reactive container fallback: if binding rejects oversized input
+					if (bindingErr instanceof AppError && bindingErr.code.startsWith('MEDIA_ERROR') && c.env.FFMPEG_CONTAINER) {
+						rlog.warn('Binding failed, falling back to container', { error: bindingErr.message });
+						const retryObject = await bucket.get(resolved);
+						if (retryObject) {
+							// Check size: above asyncContainerThreshold must use async path to avoid DO timeout
+							if (retryObject.size > config.asyncContainerThreshold) {
+								retryObject.body.cancel().catch(() => {});
+								const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
+								const fetchableUrl = remoteSource && 'url' in remoteSource
+									? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
+									: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
+								const resp = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
+									sourceUrl: fetchableUrl,
+									origin: originMatch.origin.name,
+									sourceType, etag, sourcePath: resolved, version,
+								}, params, requestUrl, rlog);
+								return { transformed: resp, etag, sourceType, transformSource: 'container', version };
+							}
+							const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
+							transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, retryObject.body, params, instanceKey);
+							transformSource = 'container';
+							break;
+						}
+					}
+					// Duration limit retry
+					if (bindingErr instanceof AppError && bindingErr.message.includes('duration')) {
+						const maxMatch = bindingErr.message.match(/(\d+)s/);
+						if (maxMatch) {
+							const maxDur = `${maxMatch[1]}s`;
+							rlog.warn('Duration retry', { original: params.duration, capped: maxDur });
+							const retryObject = await bucket.get(resolved);
+							if (retryObject) {
+								const retryParams = { ...params, duration: maxDur };
+								transformed = await transformViaBinding(c.env.MEDIA, retryObject.body, retryParams);
+								transformSource = 'binding';
+							}
+						}
+					}
+					if (!transformed) throw bindingErr;
+				}
+				break;
+			} else {
+				// Remote/fallback — check size via HEAD to decide routing
+				version = forceBust ? forceVersion : undefined;
+				sourceType = source.type;
+
+				let sourceUrl = resolved;
+				if (source.auth && source.auth.type === 'aws-s3') {
+					sourceUrl = await getPresignedUrl(
+						c.env.CACHE_VERSIONS,
+						resolved,
+						source.auth,
+						envRecord,
+					);
+				}
+
+				// Check content-length via HEAD to detect oversized sources
+				const CDN_CGI_SIZE_LIMIT = config.cdnCgiSizeLimit;
+				const headResp = await fetch(sourceUrl, { method: 'HEAD' }).catch(() => null);
+				const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
+
+				// Capture source freshness metadata for revalidation
+				sourcePath = sourceUrl;
+				if (headResp) {
+					etag = headResp.headers.get('ETag') ?? undefined;
+					sourceLastModified = headResp.headers.get('Last-Modified') ?? undefined;
+				}
+
+				if (contentLength > CDN_CGI_SIZE_LIMIT && (c.env.FFMPEG_CONTAINER || c.env.TRANSFORM_QUEUE)) {
+					// Use remote URL for container fetch — container downloads directly
+					// via internet (enableInternet=true), bypassing Worker memory limits.
+					// R2 binding path (/internal/r2-source) streams through the Worker
+					// outbound handler which hits memory limits on 725MB+ files.
+					rlog.info('Remote source exceeds cdn-cgi limit, enqueuing async container', {
+						size: contentLength, limit: CDN_CGI_SIZE_LIMIT, sourceUrl,
+					});
+					const resp = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
+						sourceUrl,
+						origin: originMatch.origin.name,
+						sourceType, etag, sourceLastModified, sourcePath: sourceUrl, version,
+					}, params, requestUrl, rlog);
+					return { transformed: resp, etag, sourceType, transformSource: 'container', version };
+				}
+
+				rlog.info('Source resolved (cdn-cgi)', { path: resolved, sourceUrl, sourceType, contentLength });
+				const resp = await transformViaCdnCgi(zoneHost, sourceUrl, params, version);
+
+				// Check Cf-Resized header for CF error codes (e.g. err=9402).
+				// cdn-cgi may return 200 with an error in this header. The response
+				// body also contains a human-readable error message from CF.
+				// See: https://developers.cloudflare.com/stream/transform-videos/troubleshooting/
+				const cfResized = resp.headers.get('Cf-Resized') ?? '';
+				const cfErrMatch = cfResized.match(/err=(\d+)/);
+				if (cfErrMatch) {
+					const cfErr = parseInt(cfErrMatch[1], 10);
+					// Read the CF error message from the response body
+					const cfErrBody = await resp.text().catch(() => '');
+					const cfErrDesc = CF_ERROR_CODES[cfErr] ?? 'Unknown CF transform error';
+					rlog.warn('cdn-cgi transform error', {
+						cfErr, cfErrDesc,
+						cfErrBody: cfErrBody.slice(0, 500),
+						sourceUrl, resolved,
+					});
+
+					// 9402 = origin too large — route to container if available
+					if (cfErr === 9402 && (c.env.FFMPEG_CONTAINER || c.env.TRANSFORM_QUEUE)) {
+						const pending = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
+							sourceUrl,
+							origin: originMatch.origin.name,
+							sourceType, etag, sourceLastModified, sourcePath: sourceUrl, version,
+						}, params, requestUrl, rlog,
+							`Source too large for edge transform (${cfErrDesc}). Processing via container.`,
+						);
+						return { transformed: pending, etag, sourceType, transformSource: 'container', version };
+					}
+					// All other CF errors — push descriptive message and try next source
+					errors.push(`${source.type}(p${source.priority}): cdn-cgi err=${cfErr} (${cfErrDesc}) for ${resolved}`);
+					continue;
+				}
+
+				// HTTP status checks
+				if (resp.status === 404 || resp.status === 410) {
+					errors.push(`${source.type}(p${source.priority}): cdn-cgi 404 for ${resolved}`);
+					continue;
+				}
+				if (resp.status >= 500 && resp.status < 600) {
+					const body = await resp.text().catch(() => '');
+					errors.push(`${source.type}(p${source.priority}): cdn-cgi ${resp.status}: ${body.slice(0, 200)}`);
+					continue;
+				}
+
+				// Detect untransformed passthrough
+				const respCT = resp.headers.get('Content-Type') ?? '';
+				const isRawPassthrough =
+					(params.mode === 'frame' && !respCT.startsWith('image/')) ||
+					(params.mode === 'audio' && !respCT.startsWith('audio/')) ||
+					(contentLength > 0 && parseInt(resp.headers.get('Content-Length') ?? '0', 10) === contentLength);
+				if (isRawPassthrough) {
+					errors.push(`${source.type}(p${source.priority}): cdn-cgi returned raw source (transforms not enabled?)`);
+					await resp.body?.cancel().catch(() => {});
+					continue;
+				}
+
+				transformed = resp;
+				transformSource = 'cdn-cgi';
+				break;
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			errors.push(`${source.type}(p${source.priority}): ${msg}`);
+			rlog.warn('Source failed, trying next', { source: source.type, error: msg });
+			continue;
+		}
+	}
+
+	// Last resort: raw passthrough from any source
+	if (!transformed) {
+		rlog.warn('All transforms failed, attempting raw passthrough', { errors });
+		for (const source of sources) {
+			try {
+				const resolved = resolveSourcePath(source, path, originMatch.captures);
+				if (source.type === 'r2') {
+					const bucket = envRecord[source.bucketBinding] as R2Bucket | undefined;
+					const object = bucket ? await bucket.get(resolved) : null;
+					if (object) {
+						sourceType = 'r2';
+						etag = object.etag;
+						transformSource = 'passthrough';
+						transformed = new Response(object.body, {
+							headers: { 'Content-Type': object.httpMetadata?.contentType ?? 'video/mp4' },
+						});
+						break;
+					}
+				} else if (source.url) {
+					const resp = await fetch(source.url.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, ''));
+					if (resp.ok) {
+						sourceType = source.type;
+						transformSource = 'passthrough';
+						transformed = resp;
+						break;
+					}
+				}
+			} catch { continue; }
+		}
+	}
+
+	if (!transformed) {
+		throw new AppError(502, 'ALL_SOURCES_FAILED', `All sources failed for origin '${originMatch.origin.name}'`, {
+			origin: originMatch.origin.name,
+			path,
+			errors,
+		});
+	}
+
+	return { transformed, etag, sourceLastModified, sourcePath, sourceType, transformSource, version };
+}
 
 /** Single-flight dedup: max 500 concurrent transforms, 5-min TTL. */
 const coalescer = new RequestCoalescer({ maxSize: 500, ttlMs: 300_000 });
@@ -492,8 +1004,7 @@ export async function transformHandler(c: HonoContext) {
 			const displaySourceType = storedSourceType ?? 'unknown';
 
 			// R2 HIT is always a 2xx — Cache-Control from origin config
-			const r2cc = originMatch.origin.cacheControl;
-			const r2CacheControl = r2cc?.ok ?? `public, max-age=${originMatch.origin.ttl?.ok ?? 86400}`;
+			const r2CacheControl = buildCacheControl(200, originMatch.origin.cacheControl, originMatch.origin.ttl);
 
 			const headers = new Headers();
 			headers.set('Content-Type', ct);
@@ -594,432 +1105,20 @@ export async function transformHandler(c: HonoContext) {
 	}
 
 	// 5. Resolve source + transform (wrapped in a coalescing promise)
-	const transformPromise = (async () => {
-		const envRecord = c.env as unknown as Record<string, unknown>;
-		const zoneHost = new URL(c.req.url).host;
-		const sources = sortedSources(originMatch.origin);
-		const errors: string[] = [];
-		let transformed: Response | null = null;
-		let etag: string | undefined;
-		let sourceLastModified: string | undefined;
-		let sourcePath: string | undefined;
-		let version: number | undefined;
-		let sourceType: string = 'unknown';
-		let transformSource: string = 'unknown';
-
-		// Container-only params: route to container if enabled
-		const containerNeeded = needsContainer(params);
-		if (containerNeeded && config.container?.enabled && c.env.FFMPEG_CONTAINER) {
-			rlog.info('Routing to FFmpeg container', { path });
-			for (const source of sources) {
-				try {
-					const resolved = resolveSourcePath(source, path, originMatch.captures);
-
-					if (source.type === 'r2') {
-						const bucket = envRecord[source.bucketBinding] as R2Bucket | undefined;
-						if (!bucket) continue;
-						const object = await bucket.get(resolved);
-						if (!object) continue;
-						etag = object.etag;
-						sourcePath = resolved;
-						sourceType = 'r2';
-
-						// Size-based routing: very large files use async queue path
-						// to avoid streaming hundreds of MB through the DO.
-						if (object.size > config.asyncContainerThreshold) {
-							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
-							const fetchableUrl = remoteSource && 'url' in remoteSource
-								? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
-								: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
-							rlog.info('Container-only + oversized R2, enqueuing async container', {
-								size: object.size, fetchableUrl,
-							});
-							object.body.cancel().catch(() => {});
-							const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
-								sourceUrl: fetchableUrl,
-								origin: originMatch.origin.name,
-								sourceType, etag, sourcePath: resolved, version,
-							}, params, requestUrl, rlog);
-							return { transformed, etag, sourceType };
-						}
-
-						// Fits in sync container (<= 256MB)
-						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
-						transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, object.body, params, instanceKey);
-						transformSource = 'container';
-						break;
-					} else if (source.url) {
-						// Remote source: check size via HEAD, route to async if large
-						const remoteUrl = source.url.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
-						const headResp = await fetch(remoteUrl, { method: 'HEAD' }).catch(() => null);
-						const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
-						sourceType = source.type;
-						sourcePath = remoteUrl;
-						if (headResp) {
-							etag = headResp.headers.get('ETag') ?? undefined;
-							sourceLastModified = headResp.headers.get('Last-Modified') ?? undefined;
-						}
-
-						if (contentLength > config.asyncContainerThreshold) {
-							rlog.info('Container-only + oversized remote, enqueuing async container', {
-								size: contentLength, fetchableUrl: remoteUrl,
-							});
-							const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
-								sourceUrl: remoteUrl,
-								origin: originMatch.origin.name,
-								sourceType, etag, sourceLastModified, sourcePath: remoteUrl, version,
-							}, params, requestUrl, rlog);
-							return { transformed, etag, sourceType };
-						}
-
-						const resp = await fetch(remoteUrl);
-						if (resp.ok && resp.body) {
-							const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
-							transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, resp.body, params, instanceKey);
-							transformSource = 'container';
-							break;
-						}
-					}
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					errors.push(`container(${source.type}): ${msg}`);
-					continue;
-				}
-			}
-		} else if (containerNeeded) {
-			rlog.warn('Container-only params present but container disabled — proceeding with binding', {
-				params: { fps: params.fps, speed: params.speed, rotate: params.rotate, crop: params.crop, bitrate: params.bitrate, duration: params.duration },
-			});
-		}
-
-		// Normal source loop (skipped if container already produced a result)
-		if (transformed) {
-			// Container handled it — skip to response headers
-		} else for (const source of sources) {
-			try {
-				const resolved = resolveSourcePath(source, path, originMatch.captures);
-
-				if (source.type === 'r2') {
-					// R2 -> check size -> binding (<=100MB) or container (>100MB)
-					const bucket = envRecord[source.bucketBinding] as R2Bucket | undefined;
-					if (!bucket) throw new Error(`R2 binding '${source.bucketBinding}' not available`);
-					const object = await bucket.get(resolved);
-					if (!object) throw new Error(`R2 object not found: ${resolved}`);
-
-					const BINDING_SIZE_LIMIT = config.bindingSizeLimit;
-					etag = object.etag;
-					sourcePath = resolved;
-					sourceType = 'r2';
-					rlog.info('Source fetched (R2)', { path: resolved, size: object.size, etag });
-
-					// Oversized: route to FFmpeg container (async for very large files)
-					if (object.size > BINDING_SIZE_LIMIT && c.env.FFMPEG_CONTAINER) {
-						const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
-
-						if (object.size > config.asyncContainerThreshold) {
-							// Above asyncContainerThreshold (default 256MB): use queue-based async container.
-							// Prefer remote URL for large files — container fetches directly
-							// via internet (enableInternet=true), avoiding Worker memory limits.
-							// Fall back to /internal/r2-source only for R2-only sources.
-							const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
-							const fetchableUrl = remoteSource && 'url' in remoteSource
-								? remoteSource.url.replace(/\/+$/, '') + path
-								: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
-							rlog.info('R2 object too large for sync, enqueuing async container', {
-								size: object.size, fetchableUrl,
-							});
-							object.body.cancel().catch(() => {});
-							const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
-								sourceUrl: fetchableUrl,
-								origin: originMatch.origin.name,
-								sourceType, etag, sourcePath: resolved, version,
-							}, params, requestUrl, rlog);
-							return { transformed, etag, sourceType };
-						}
-
-						// Large but fits in sync (100-256MB): wait for container
-						rlog.info('R2 object exceeds binding limit, routing to container', {
-							size: object.size, limit: BINDING_SIZE_LIMIT,
-						});
-						transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, object.body, params, instanceKey);
-						transformSource = 'container';
-						break;
-					}
-
-					try {
-						transformed = await transformViaBinding(c.env.MEDIA, object.body, params);
-						transformSource = 'binding';
-					} catch (bindingErr) {
-						// Reactive container fallback: if binding rejects oversized input
-						if (bindingErr instanceof AppError && bindingErr.code.startsWith('MEDIA_ERROR') && c.env.FFMPEG_CONTAINER) {
-							rlog.warn('Binding failed, falling back to container', { error: bindingErr.message });
-							const retryObject = await bucket.get(resolved);
-							if (retryObject) {
-								// Check size: above asyncContainerThreshold must use async path to avoid DO timeout
-								if (retryObject.size > config.asyncContainerThreshold) {
-									retryObject.body.cancel().catch(() => {});
-									const remoteSource = sources.find((s) => s.type === 'remote' || s.type === 'fallback');
-									const fetchableUrl = remoteSource && 'url' in remoteSource
-										? (remoteSource as { url: string }).url.replace(/\/+$/, '') + path
-										: toCallbackUrl(zoneHost, `/internal/r2-source?key=${encodeURIComponent(resolved)}&bucket=${encodeURIComponent(source.bucketBinding)}`);
-									const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
-										sourceUrl: fetchableUrl,
-										origin: originMatch.origin.name,
-										sourceType, etag, sourcePath: resolved, version,
-									}, params, requestUrl, rlog);
-									return { transformed, etag, sourceType };
-								}
-								const instanceKey = buildContainerInstanceKey(originMatch.origin.name, path, params);
-								transformed = await transformViaContainer(c.env.FFMPEG_CONTAINER, retryObject.body, params, instanceKey);
-								transformSource = 'container';
-								break;
-							}
-						}
-						// Duration limit retry
-						if (bindingErr instanceof AppError && bindingErr.message.includes('duration')) {
-							const maxMatch = bindingErr.message.match(/(\d+)s/);
-							if (maxMatch) {
-								const maxDur = `${maxMatch[1]}s`;
-								rlog.warn('Duration retry', { original: params.duration, capped: maxDur });
-								const retryObject = await bucket.get(resolved);
-								if (retryObject) {
-									const retryParams = { ...params, duration: maxDur };
-									transformed = await transformViaBinding(c.env.MEDIA, retryObject.body, retryParams);
-									transformSource = 'binding';
-								}
-							}
-						}
-						if (!transformed) throw bindingErr;
-					}
-					break;
-				} else {
-					// Remote/fallback — check size via HEAD to decide routing
-					version = forceBust ? forceVersion : undefined;
-					sourceType = source.type;
-
-					let sourceUrl = resolved;
-					if (source.auth && source.auth.type === 'aws-s3') {
-						sourceUrl = await getPresignedUrl(
-							c.env.CACHE_VERSIONS,
-							resolved,
-							source.auth,
-							envRecord,
-						);
-					}
-
-					// Check content-length via HEAD to detect oversized sources
-					const CDN_CGI_SIZE_LIMIT = config.cdnCgiSizeLimit;
-					const headResp = await fetch(sourceUrl, { method: 'HEAD' }).catch(() => null);
-					const contentLength = parseInt(headResp?.headers.get('Content-Length') ?? '0', 10);
-
-					// Capture source freshness metadata for revalidation
-					sourcePath = sourceUrl;
-					if (headResp) {
-						etag = headResp.headers.get('ETag') ?? undefined;
-						sourceLastModified = headResp.headers.get('Last-Modified') ?? undefined;
-					}
-
-					if (contentLength > CDN_CGI_SIZE_LIMIT && (c.env.FFMPEG_CONTAINER || c.env.TRANSFORM_QUEUE)) {
-						// Use remote URL for container fetch — container downloads directly
-						// via internet (enableInternet=true), bypassing Worker memory limits.
-						// R2 binding path (/internal/r2-source) streams through the Worker
-						// outbound handler which hits memory limits on 725MB+ files.
-						rlog.info('Remote source exceeds cdn-cgi limit, enqueuing async container', {
-							size: contentLength, limit: CDN_CGI_SIZE_LIMIT, sourceUrl,
-						});
-						const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
-							sourceUrl,
-							origin: originMatch.origin.name,
-							sourceType, etag, sourceLastModified, sourcePath: sourceUrl, version,
-						}, params, requestUrl, rlog);
-						return { transformed, etag, sourceType };
-					}
-
-					rlog.info('Source resolved (cdn-cgi)', { path: resolved, sourceUrl, sourceType, contentLength });
-					const resp = await transformViaCdnCgi(zoneHost, sourceUrl, params, version);
-
-					// Check Cf-Resized header for CF error codes (e.g. err=9402).
-					// cdn-cgi may return 200 with an error in this header. The response
-					// body also contains a human-readable error message from CF.
-					// See: https://developers.cloudflare.com/stream/transform-videos/troubleshooting/
-					const cfResized = resp.headers.get('Cf-Resized') ?? '';
-					const cfErrMatch = cfResized.match(/err=(\d+)/);
-					if (cfErrMatch) {
-						const cfErr = parseInt(cfErrMatch[1], 10);
-						// Read the CF error message from the response body
-						const cfErrBody = await resp.text().catch(() => '');
-						const cfErrDesc = CF_ERROR_CODES[cfErr] ?? 'Unknown CF transform error';
-						rlog.warn('cdn-cgi transform error', {
-							cfErr, cfErrDesc,
-							cfErrBody: cfErrBody.slice(0, 500),
-							sourceUrl, resolved,
-						});
-
-						// 9402 = origin too large — route to container if available
-						if (cfErr === 9402 && (c.env.FFMPEG_CONTAINER || c.env.TRANSFORM_QUEUE)) {
-							const transformed = await routeToAsyncContainer(c, zoneHost, path, cacheKey, {
-								sourceUrl,
-								origin: originMatch.origin.name,
-								sourceType, etag, sourceLastModified, sourcePath: sourceUrl, version,
-							}, params, requestUrl, rlog,
-								`Source too large for edge transform (${cfErrDesc}). Processing via container.`,
-							);
-							return {
-								transformed,
-								etag, sourceType,
-							};
-						}
-						// All other CF errors — push descriptive message and try next source
-						errors.push(`${source.type}(p${source.priority}): cdn-cgi err=${cfErr} (${cfErrDesc}) for ${resolved}`);
-						continue;
-					}
-
-					// HTTP status checks
-					if (resp.status === 404 || resp.status === 410) {
-						errors.push(`${source.type}(p${source.priority}): cdn-cgi 404 for ${resolved}`);
-						continue;
-					}
-					if (resp.status >= 500 && resp.status < 600) {
-						const body = await resp.text().catch(() => '');
-						errors.push(`${source.type}(p${source.priority}): cdn-cgi ${resp.status}: ${body.slice(0, 200)}`);
-						continue;
-					}
-
-					// Detect untransformed passthrough
-					const respCT = resp.headers.get('Content-Type') ?? '';
-					const isRawPassthrough =
-						(params.mode === 'frame' && !respCT.startsWith('image/')) ||
-						(params.mode === 'audio' && !respCT.startsWith('audio/')) ||
-						(contentLength > 0 && parseInt(resp.headers.get('Content-Length') ?? '0', 10) === contentLength);
-					if (isRawPassthrough) {
-						errors.push(`${source.type}(p${source.priority}): cdn-cgi returned raw source (transforms not enabled?)`);
-						await resp.body?.cancel().catch(() => {});
-						continue;
-					}
-
-					transformed = resp;
-					transformSource = 'cdn-cgi';
-					break;
-				}
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				errors.push(`${source.type}(p${source.priority}): ${msg}`);
-				rlog.warn('Source failed, trying next', { source: source.type, error: msg });
-				continue;
-			}
-		}
-
-		// Last resort: raw passthrough from any source
-		if (!transformed) {
-			rlog.warn('All transforms failed, attempting raw passthrough', { errors });
-			for (const source of sources) {
-				try {
-					const resolved = resolveSourcePath(source, path, originMatch.captures);
-					if (source.type === 'r2') {
-						const bucket = envRecord[source.bucketBinding] as R2Bucket | undefined;
-						const object = bucket ? await bucket.get(resolved) : null;
-						if (object) {
-							sourceType = 'r2';
-							etag = object.etag;
-							transformSource = 'passthrough';
-							transformed = new Response(object.body, {
-								headers: { 'Content-Type': object.httpMetadata?.contentType ?? 'video/mp4' },
-							});
-							break;
-						}
-					} else if (source.url) {
-						const resp = await fetch(source.url.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, ''));
-						if (resp.ok) {
-							sourceType = source.type;
-							transformSource = 'passthrough';
-							transformed = resp;
-							break;
-						}
-					}
-				} catch { continue; }
-			}
-		}
-
-		if (!transformed) {
-			throw new AppError(502, 'ALL_SOURCES_FAILED', `All sources failed for origin '${originMatch.origin.name}'`, {
-				origin: originMatch.origin.name,
-				path,
-				errors,
-			});
-		}
-
-		return { transformed, etag, sourceLastModified, sourcePath, sourceType, transformSource, version };
-	})();
+	const transformPromise = resolveAndTransform({
+		c, path, params, cacheKey, requestUrl, rlog, config, originMatch, forceBust, forceVersion,
+	});
 
 	// Register for coalescing, clean up when done
 	const responsePromise = transformPromise.then(async ({ transformed, etag, sourceLastModified: srcLastMod, sourcePath: srcPath, sourceType, transformSource: rawTransformSource, version: srcVersion }) => {
 		const transformSource = rawTransformSource ?? 'unknown';
 		const durationMs = Math.round(performance.now() - startTime);
 
-		// 6. Response headers — Cache-Control from origin config (per status code)
-		const s = transformed.status;
-		const cc = originMatch.origin.cacheControl;
-		const ttl = originMatch.origin.ttl;
-		let cacheControlHeader: string;
-		if (s >= 200 && s < 300) cacheControlHeader = cc?.ok ?? `public, max-age=${ttl?.ok ?? 86400}`;
-		else if (s >= 300 && s < 400) cacheControlHeader = cc?.redirects ?? `public, max-age=${ttl?.redirects ?? 300}`;
-		else if (s >= 400 && s < 500) cacheControlHeader = cc?.clientError ?? `public, max-age=${ttl?.clientError ?? 60}`;
-		else cacheControlHeader = cc?.serverError ?? `public, max-age=${ttl?.serverError ?? 10}`;
-
-		const headers = new Headers(transformed.headers);
-		headers.set('Cache-Control', cacheControlHeader);
-		headers.set('Accept-Ranges', 'bytes');
-		headers.set('X-Request-ID', requestId);
-		headers.set('Via', 'video-resizer');
-		if (params.derivative) headers.set('X-Derivative', params.derivative);
-		if (params.filename) headers.set('Content-Disposition', `inline; filename="${params.filename}"`);
-
-		// Determine cacheability early — used for both X-R2-Stored header and R2 persistence
-		const isPendingPassthrough = headers.get('X-Transform-Pending') === 'true';
-		const shouldCache = !skipCache && !isPendingPassthrough && transformed.status >= 200 && transformed.status < 400;
-
-		// Debug headers
-		headers.set('X-Cache-Key', cacheKey);
-		// X-R2-Stored: whether the result is durably stored in R2 persistent storage
-		headers.set('X-R2-Stored', shouldCache ? 'true' : 'false');
-		headers.set('X-Origin', originMatch.origin.name);
-		headers.set('X-Source-Type', sourceType);
-		headers.set('X-Transform-Source', transformSource);
-		headers.set('X-Processing-Time-Ms', String(durationMs));
-		if (etag) headers.set('X-Source-Etag', etag);
-		if (params.width) headers.set('X-Resolved-Width', String(params.width));
-		if (params.height) headers.set('X-Resolved-Height', String(params.height));
-		if (warnings.length > 0) headers.set('X-Param-Warnings', warnings.map((w) => `${w.param}: ${w.reason}`).join('; '));
-
-		// Playback hint headers
-		if (params.loop !== undefined) headers.set('X-Playback-Loop', String(params.loop));
-		if (params.autoplay !== undefined) headers.set('X-Playback-Autoplay', String(params.autoplay));
-		if (params.muted !== undefined) headers.set('X-Playback-Muted', String(params.muted));
-		if (params.preload) headers.set('X-Playback-Preload', params.preload);
-
-		// Content-type correction for non-video modes (skip for 202 pending responses)
-		if (!isPendingPassthrough) {
-			if (params.mode === 'audio') {
-				headers.set('Content-Type', 'audio/mp4');
-			} else if (params.mode === 'frame') {
-				const fmt = params.format === 'png' ? 'image/png' : 'image/jpeg';
-				headers.set('Content-Type', fmt);
-			} else if (params.mode === 'spritesheet') {
-				headers.set('Content-Type', 'image/jpeg');
-			}
-		}
-
-		// Cache-Tag for purge-by-tag
-		const tags: string[] = [];
-		if (params.derivative) tags.push(`derivative:${params.derivative}`);
-		tags.push(`origin:${originMatch.origin.name}`);
-		if (params.mode && params.mode !== 'video') tags.push(`mode:${params.mode}`);
-		if (originMatch.origin.cacheTags) tags.push(...originMatch.origin.cacheTags);
-		if (tags.length) headers.set('Cache-Tag', tags.join(','));
-
-		// Strip headers that prevent caching
-		headers.delete('Set-Cookie');
-		if (headers.get('Vary') === '*') headers.delete('Vary');
+		// 6. Build final headers (Cache-Control, debug, playback hints, cache tags)
+		const { headers, shouldCache } = buildFinalHeaders({
+			transformed, transformSource, sourceType, etag,
+			params, originMatch, cacheKey, durationMs, requestId, warnings, skipCache,
+		});
 
 		// 7. Store: transform → R2 → cache.put → serve via cache.match
 		//    This ensures range requests work on first request (cache.match
