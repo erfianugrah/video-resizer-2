@@ -32,7 +32,7 @@ import * as log from '../log';
  * Large transcodes (700MB 1080p→1440p) can take 10-20min — a flat 120s
  * retry caused 5-10 concurrent ffmpeg processes that stalled the container.
  */
-function retryDelay(attempt: number): number {
+export function retryDelay(attempt: number): number {
 	return Math.min(120 * Math.pow(2, attempt - 1), 900);
 }
 

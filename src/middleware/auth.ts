@@ -6,41 +6,12 @@
  *   2. Session cookie from dashboard login (browser)
  *
  * Uses timing-safe comparison to prevent timing attacks.
+ * Session cookie logic lives in `../session` (shared with dashboard handler).
  */
 import type { Env } from '../types';
 import { AppError } from '../errors';
 import { timingSafeEqual } from '../util';
-
-/** Parse a specific cookie from the Cookie header. */
-function getCookie(req: Request, name: string): string | null {
-	const header = req.headers.get('Cookie');
-	if (!header) return null;
-	const match = header.split(';').find((c) => c.trim().startsWith(`${name}=`));
-	return match ? match.split('=').slice(1).join('=').trim() : null;
-}
-
-/** Validate the HMAC-signed session cookie (same logic as dashboard.ts). */
-async function validateSessionCookie(cookieValue: string, apiToken: string): Promise<boolean> {
-	const parts = cookieValue.split('.');
-	if (parts.length !== 2) return false;
-
-	const [expiryStr, sigHex] = parts;
-	const expiry = parseInt(expiryStr, 10);
-	if (isNaN(expiry) || expiry < Date.now()) return false;
-
-	const encoder = new TextEncoder();
-	const key = await crypto.subtle.importKey(
-		'raw',
-		encoder.encode(apiToken),
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['sign', 'verify'],
-	);
-	const expectedSig = await crypto.subtle.sign('HMAC', key, encoder.encode(expiryStr));
-	const expectedHex = [...new Uint8Array(expectedSig)].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-	return timingSafeEqual(sigHex, expectedHex);
-}
+import { getCookie, validateSession, SESSION_COOKIE_NAME } from '../session';
 
 /**
  * Require admin authentication — accepts Bearer token OR valid session cookie.
@@ -58,8 +29,8 @@ export async function requireAuth(c: { req: { raw: Request; header(name: string)
 	}
 
 	// 2. Try session cookie (dashboard browser sessions)
-	const sessionCookie = getCookie(c.req.raw, 'vr2_session');
-	if (sessionCookie && await validateSessionCookie(sessionCookie, c.env.CONFIG_API_TOKEN)) {
+	const sessionCookie = getCookie(c.req.raw, SESSION_COOKIE_NAME);
+	if (sessionCookie && await validateSession(sessionCookie, c.env.CONFIG_API_TOKEN)) {
 		return;
 	}
 

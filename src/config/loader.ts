@@ -63,66 +63,30 @@ export async function loadConfig(kv: KVNamespace | undefined): Promise<AppConfig
 			return DEFAULT_CONFIG;
 		}
 
-		// The KV config has a nested structure — extract the video config parts
+		// The KV config has a nested structure — extract the video config parts.
+		// Every field may be at root.X or root.video.X (legacy nesting).
 		const kvConfig = raw as Record<string, unknown>;
+		const video = kvConfig.video as Record<string, unknown> | undefined;
 
-		// Build the config object from KV structure
-		const configInput: Record<string, unknown> = {};
+		/** Read a field from root.X, falling back to root.video.X. */
+		const pick = (key: string): unknown => kvConfig[key] ?? video?.[key];
 
-		// Origins can be at root.origins or root.video.origins
-		if (kvConfig.origins) {
-			const originsObj = kvConfig.origins as Record<string, unknown>;
-			configInput.origins = originsObj.items ?? originsObj;
-		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).origins) {
-			const videoOrigins = (kvConfig.video as Record<string, unknown>).origins as Record<string, unknown>;
-			configInput.origins = videoOrigins.items ?? videoOrigins;
-		}
+		// Origins may be wrapped as `{items: [...]}` (legacy shape) — unwrap if so.
+		const rawOrigins = pick('origins') as Record<string, unknown> | unknown[] | undefined;
+		const origins = Array.isArray(rawOrigins)
+			? rawOrigins
+			: (rawOrigins as Record<string, unknown> | undefined)?.items ?? rawOrigins;
 
-		// Derivatives
-		if (kvConfig.derivatives) {
-			configInput.derivatives = kvConfig.derivatives;
-		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).derivatives) {
-			configInput.derivatives = (kvConfig.video as Record<string, unknown>).derivatives;
-		}
-
-		// Responsive
-		if (kvConfig.responsive) {
-			configInput.responsive = kvConfig.responsive;
-		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).responsive) {
-			configInput.responsive = (kvConfig.video as Record<string, unknown>).responsive;
-		}
-
-		// Passthrough
-		if (kvConfig.passthrough) {
-			configInput.passthrough = kvConfig.passthrough;
-		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).passthrough) {
-			configInput.passthrough = (kvConfig.video as Record<string, unknown>).passthrough;
-		}
-
-		// Container
-		if (kvConfig.container) {
-			configInput.container = kvConfig.container;
-		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).container) {
-			configInput.container = (kvConfig.video as Record<string, unknown>).container;
-		}
-
-		// Version
-		if (kvConfig.version) {
-			configInput.version = kvConfig.version;
-		}
-
-		// Size limits
-		if (kvConfig.cdnCgiSizeLimit !== undefined) {
-			configInput.cdnCgiSizeLimit = kvConfig.cdnCgiSizeLimit;
-		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).cdnCgiSizeLimit !== undefined) {
-			configInput.cdnCgiSizeLimit = (kvConfig.video as Record<string, unknown>).cdnCgiSizeLimit;
-		}
-
-		if (kvConfig.bindingSizeLimit !== undefined) {
-			configInput.bindingSizeLimit = kvConfig.bindingSizeLimit;
-		} else if (kvConfig.video && (kvConfig.video as Record<string, unknown>).bindingSizeLimit !== undefined) {
-			configInput.bindingSizeLimit = (kvConfig.video as Record<string, unknown>).bindingSizeLimit;
-		}
+		const configInput: Record<string, unknown> = {
+			...(origins !== undefined && { origins }),
+			...(pick('derivatives') !== undefined && { derivatives: pick('derivatives') }),
+			...(pick('responsive') !== undefined && { responsive: pick('responsive') }),
+			...(pick('passthrough') !== undefined && { passthrough: pick('passthrough') }),
+			...(pick('container') !== undefined && { container: pick('container') }),
+			...(kvConfig.version !== undefined && { version: kvConfig.version }),
+			...(pick('cdnCgiSizeLimit') !== undefined && { cdnCgiSizeLimit: pick('cdnCgiSizeLimit') }),
+			...(pick('bindingSizeLimit') !== undefined && { bindingSizeLimit: pick('bindingSizeLimit') }),
+		};
 
 		const result = AppConfigSchema.safeParse(configInput);
 		if (result.success) {

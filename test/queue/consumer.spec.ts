@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { JobMessage } from '../../src/transform/job';
+import { retryDelay } from '../../src/queue/consumer';
 
 describe('JobMessage serialization', () => {
 	it('round-trips through JSON', () => {
@@ -88,11 +89,6 @@ describe('Callback URL construction', () => {
 });
 
 describe('Retry backoff calculation (success path)', () => {
-	/** Mirrors retryDelay() from consumer.ts: 120 * 2^(attempt-1), capped at 900. */
-	function retryDelay(attempt: number): number {
-		return Math.min(120 * Math.pow(2, attempt - 1), 900);
-	}
-
 	it('first attempt: 120s delay', () => {
 		expect(retryDelay(1)).toBe(120);
 	});

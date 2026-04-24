@@ -12,65 +12,17 @@
  */
 import type { Context } from 'hono';
 import type { Env, Variables } from '../types';
+import { timingSafeEqual } from '../util';
+import {
+	createSession,
+	validateSession,
+	getCookie,
+	sessionCookieHeader,
+	SESSION_COOKIE_NAME,
+	SESSION_TTL_MS,
+} from '../session';
 
 type HonoContext = Context<{ Bindings: Env; Variables: Variables }>;
-
-const COOKIE_NAME = 'vr2_session';
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-import { timingSafeEqual } from '../util';
-
-/** Derive an HMAC key from the API token. */
-async function getHmacKey(token: string): Promise<CryptoKey> {
-	const encoder = new TextEncoder();
-	return crypto.subtle.importKey(
-		'raw',
-		encoder.encode(token),
-		{ name: 'HMAC', hash: 'SHA-256' },
-		false,
-		['sign', 'verify'],
-	);
-}
-
-/** Create a signed session cookie value: base64(expiry:signature). */
-async function createSession(token: string): Promise<string> {
-	const expiry = Date.now() + SESSION_TTL_MS;
-	const key = await getHmacKey(token);
-	const encoder = new TextEncoder();
-	const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(String(expiry)));
-	const sigHex = [...new Uint8Array(signature)].map((b) => b.toString(16).padStart(2, '0')).join('');
-	return `${expiry}.${sigHex}`;
-}
-
-/** Validate a session cookie value. Returns true if valid and not expired. */
-async function validateSession(cookieValue: string, token: string): Promise<boolean> {
-	const parts = cookieValue.split('.');
-	if (parts.length !== 2) return false;
-
-	const [expiryStr, sigHex] = parts;
-	const expiry = parseInt(expiryStr, 10);
-	if (isNaN(expiry) || expiry < Date.now()) return false; // expired
-
-	const key = await getHmacKey(token);
-	const encoder = new TextEncoder();
-	const expectedSig = await crypto.subtle.sign('HMAC', key, encoder.encode(expiryStr));
-	const expectedHex = [...new Uint8Array(expectedSig)].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-	return timingSafeEqual(sigHex, expectedHex);
-}
-
-/** Parse a specific cookie from the Cookie header. */
-function getCookie(req: Request, name: string): string | null {
-	const header = req.headers.get('Cookie');
-	if (!header) return null;
-	const match = header.split(';').find((c) => c.trim().startsWith(`${name}=`));
-	return match ? match.split('=').slice(1).join('=').trim() : null;
-}
-
-/** Build the Set-Cookie header for the session. */
-function sessionCookieHeader(value: string, maxAge: number): string {
-	return `${COOKIE_NAME}=${value}; Path=/admin; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`;
-}
 
 /** Login page HTML — minimal, no external deps. */
 const LOGIN_HTML = `<!DOCTYPE html>
@@ -162,7 +114,7 @@ export async function dashboardAuth(c: HonoContext) {
 	}
 
 	// Check session cookie
-	const sessionCookie = getCookie(c.req.raw, COOKIE_NAME);
+	const sessionCookie = getCookie(c.req.raw, SESSION_COOKIE_NAME);
 	if (!sessionCookie || !(await validateSession(sessionCookie, token))) {
 		// No valid session — serve login page
 		return new Response(LOGIN_HTML, {
